@@ -1,11 +1,11 @@
 import numpy as np
 import pandas as pd
-from src.csd.csd import detect_peaks, csd1d
-from src.lfp.lfp import coherence_matrix, welch_relative_power
-from src.probe_specific.probe64d import column_split
-from src.probe_specific.NHP_neuropixelPhase3A import column_split_npx
 import scipy.io as io
-
+from laminar_tools.csd.csd import detect_peaks, csd1d
+from laminar_tools.lfp.lfp import coherence_matrix, welch_relative_power, parmfile_event_lfp
+from laminar_tools.probe_specific.probe64d import column_split
+from laminar_tools.probe_specific.NHP_neuropixelPhase3A import column_split_npx
+from skimage.metrics import structural_similarity as ssim
 
 def column_data_64D(column, siteid, mua_, lfp_, lfp_events, stim_window, rasterfs, neighborhood, threshold):
     """
@@ -402,3 +402,364 @@ def column_data_npx(column, siteid, mua_, lfp_, lfp_events, stim_window, rasterf
     csd_features['stim to peak'] = stim_csd_peak_distance
 
     return column_csd_df, column_erp_df, column_gamma_coherence, column_gamma_coherence_cavg, power_df, relative_power_df, channel_features, csd_features
+
+
+def aligned_csd_psd(parmfile):
+
+    psd_template = np.load("/auto/users/wingertj/code/csd_project/data/laminar_features/template/final_psd_template.npy")
+    csd, psd = parmfile_event_lfp(parmfile)
+    averaged_template, ssim_index, ssim = maximal_laminar_similarity(template=psd_template, image=psd, overlap=10,
+                                                                     ssim_window=5, expansion=True)
+
+    nan_pad_psd, nan_pad_csd = nan_pad_images(psd, csd, ssim_index, already_padded=False)
+
+    return nan_pad_csd, nan_pad_csd, ssim
+
+def maximal_laminar_similarity(template, image, overlap=10, ssim_window=5, expansion=True):
+    """
+    One dimensional (row) alignment of an image to a template image based on structural similarity score. Uses a
+    convolution style sliding window where image is slid along template one step at a time. Can specifiy degree of overlap
+    desired between template and image as well as window size used for structural similarity calculation. Expansion
+    will add the overhanging bits of both the template and the image if the sliding step with the highest score does not
+    have a perfect match for length of template and image.
+
+    :param template: starting image that other image will be referenced against
+    :param image: image that will be slid along the template and aligned with respect to that template
+    :param overlap: number of rows that must overlap between image and template.
+    :param ssim_window: window size parameter for structural similarity
+    :param expansion: True/False - elongates output template if the step where image and template are maximally similar
+                        are not perfectly overlapping
+    :return: new_template after image is aligned, the number of shifts/steps the image moved along the template, ssim score
+    """
+
+    # store shifted images and corresponding template pieces
+    spatial_shifts, shifted_templates, shifted_images = spatial_shifting(template, image)
+
+    # slice off sides of shifted matrices to ensure a certain degree of overlap
+
+    shifted_images_short = shifted_images[:, :, overlap:-overlap]
+    shifted_templates_short = shifted_templates[:, :, overlap:-overlap]
+
+    # compute image similarity between each of the shifts
+    shift_similarity = []
+    for i in range(len(shifted_templates_short[0, 0, :])):
+        shifted_image = shifted_images_short[:, :, i]
+        shifted_image = shifted_image[~np.isnan(shifted_image).any(axis=1)]
+        shifted_template = shifted_templates_short[:, :, i]
+        shifted_template = shifted_template[~np.isnan(shifted_template).any(axis=1)]
+        shift_similarity.append(ssim(shifted_image, shifted_template, win_size=ssim_window))
+
+    # generate new template by averaging template and image together at spatial shift with max similarity
+
+    max_similarity_index = shift_similarity.index(max(shift_similarity))
+    shifted_image = shifted_images_short[:, :, max_similarity_index]
+    shifted_image = shifted_image[~np.isnan(shifted_image).any(axis=1)]
+    shifted_template = shifted_templates_short[:, :, max_similarity_index]
+    shifted_template = shifted_template[~np.isnan(shifted_template).any(axis=1)]
+    template_overlap = (shifted_template + shifted_image) / 2
+
+    shift_index = max_similarity_index + overlap
+
+    if expansion:
+
+        # using the maximum shift index, use the inverse of the slice operation used to shift the images to find non-overlapping
+        # segments to append to the template to extend its bounds
+        new_template = expand(template, image, spatial_shifts, template_overlap, shift_index)
+    else:
+        new_template = template_overlap
+
+    return new_template, shift_index, max(shift_similarity)
+
+def post_ssim_avg_csd(csd_steps, step_index):
+
+    template = csd_steps[0]
+    images = csd_steps[1:]
+
+    for i in range(len(images)):
+        # create all spatial shifts of image and template as in laminar similarity so step index returned from laminar
+        # similarity can be used
+        image = images[i]
+        spatial_shifts, shifted_templates, shifted_images = spatial_shifting(template, images[i])
+
+        # using the step index from laminar similarity analysis, average the shifted overlapping CSD segments
+        shifted_image = shifted_images[:, :, step_index[i]]
+        shifted_image = shifted_image[~np.isnan(shifted_image).any(axis=1)]
+        shifted_template = shifted_templates[:, :, step_index[i]]
+        shifted_template = shifted_template[~np.isnan(shifted_template).any(axis=1)]
+        template_overlap = (shifted_template + shifted_image) / 2
+
+        # expand based on overhang of template or image
+        shift_index = step_index[i]
+        new_template = expand(template, image, spatial_shifts, template_overlap, shift_index)
+        template = new_template
+
+    return template
+
+# def old_spatial_shifting(template, image):
+#     """
+#     Spatially shift an image relative to a template creating a matrix of all possible degrees of overlap.
+#
+#     :param template:
+#     :param image:
+#     :return: shifted_images, shifted_templates
+#     """
+#
+#     temrow, temcol = template.shape
+#     imrow, imcol = image.shape
+#
+#     # total number of shifts should be same as convolution M+N-1?
+#     spatial_shifts = range(temrow + imrow - 1)
+#
+#     # initialize matrices to store shifted images and corresponding template pieces
+#     shifted_images = np.empty((imrow, imcol, len(spatial_shifts)))
+#     shifted_images[:] = np.nan
+#     shifted_templates = np.empty((imrow, imcol, len(spatial_shifts)))
+#     shifted_templates[:] = np.nan
+#
+#     # for each spatial shift slice the image and the template and store shifts
+#     for i in spatial_shifts:
+#         if i < len(image[:, 0]):
+#             shift_image = image[(len(image[:, 0]) - 1) - i:, :]
+#             shift_template = template[:1 + i, :]
+#         elif len(template[:, 0]) > i >= len(image[:, 0]):
+#             shift_image = image
+#             shift_template = template[i - len(image[:, 0]) + 1:i + 1, :]
+#         elif i >= len(template):
+#             shift_image = image[:len(spatial_shifts) - i, :]
+#             shift_template = template[i - len(image[:, 0]) + 1:i + 1, :]
+#         shifted_images[:len(shift_image[:, 0]), :, i] = shift_image
+#         shifted_templates[:len(shift_template[:, 0]), :, i] = shift_template
+#
+#     return spatial_shifts, shifted_templates, shifted_images
+
+
+def spatial_shifting(template, image):
+    """
+    Spatially shift an image relative to a template creating a matrix of all possible degrees of overlap.
+
+    :param template:
+    :param image:
+    :return: shifted_images, shifted_templates
+    """
+
+    ### define number of shifts ###
+
+    temrow, temcol = template.shape
+    imrow, imcol = image.shape
+
+    # total number of shifts should be same as convolution M+N-1
+    spatial_shifts = range(temrow + imrow - 1)
+
+    # max kernel size = smaller of temrow or imrow
+    if temrow <= imrow:
+        max_kernel_size = temrow
+    else:
+        max_kernel_size = imrow
+
+    ### create empty matrices to store values ###
+    shifted_images = np.empty((max_kernel_size, imcol, len(spatial_shifts)))
+    shifted_images[:] = np.nan
+    shifted_templates = np.empty((max_kernel_size, temcol, len(spatial_shifts)))
+    shifted_templates[:] = np.nan
+
+    ### loop through spatial shifts and slice out samples for both image and template ###
+    # 4 conditions:
+    # 1: the spatial step is less than the image and the template where both samples grow in size
+    # 2: If the spatial step is larger the image and smaller than the template the image stays the same size while
+        # the template window stays the same size as the image but continues shifting
+    # 3: If the spatial step is smaller than the image but larger than the template the template stays the same size
+        # while the image window stays the same size as the template but continues shifting
+    # 4: The spatial step is larger than both the length of the image and the template. Both the image and the
+        # template sample get smaller
+    for i in spatial_shifts:
+        if i < imrow and i < temrow:
+            shift_image = image[(imrow - 1) - i:, :]
+            shift_template = template[:i + 1, :]
+        elif temrow > i >=  imrow:
+            shift_image = image
+            shift_template = template[i - imrow + 1:i + 1, :]
+        elif imrow > i >= temrow:
+            shift_image = image[(imrow - 1) - i:(imrow - 1) - i + temrow]
+            shift_template = template
+        elif i >= imrow and i >= temrow:
+            shift_image = image[:len(spatial_shifts) - i, :]
+            shift_template = template[i - imrow + 1:i + 1, :]
+        shifted_images[:len(shift_image[:, 0]), :, i] = shift_image
+        shifted_templates[:len(shift_template[:, 0]), :, i] = shift_template
+
+    return spatial_shifts, shifted_templates, shifted_images
+
+
+# def old_expand(template, image, spatial_shifts, overlap, shift_index):
+#
+#     if shift_index < len(image[:, 0]):
+#         image_overhang = image[:(len(image[:, 0]) - 1) - shift_index, :]
+#         template_overhang = template[1 + shift_index:, :]
+#         new_template = np.vstack((image_overhang, overlap, template_overhang))
+#     elif len(template[:, 0]) > shift_index >= len(image[:, 0]):
+#         template_overhang_above = template[:shift_index - len(image[:, 0]) + 1, :]
+#         template_overhang_below = template[shift_index + 1:, :]
+#         new_template = np.vstack((template_overhang_above, overlap, template_overhang_below))
+#     elif shift_index >= len(template):
+#         image_overhang = image[len(spatial_shifts) - shift_index:, :]
+#         template_overhang_above = template[:shift_index - len(image[:, 0]) + 1, :]
+#         new_template = np.vstack((template_overhang_above, overlap, image_overhang))
+#
+#     return new_template
+
+def expand(template, image, spatial_shifts, overlap, shift_index):
+
+    """
+    following SSIM analysis, this will stack the overhang of the image and or template if there is not perfect overlap.
+    :param template:
+    :param image:
+    :param spatial_shifts:
+    :param overlap:
+    :param shift_index:
+    :return:
+    """
+    temrow, temcol = template.shape
+    imrow, imcol = image.shape
+
+
+    if shift_index < imrow and shift_index < temrow:
+        image_overhang = image[:(imrow - 1) - shift_index, :]
+        template_overhang = template[1 + shift_index:, :]
+        new_template = np.vstack((image_overhang, overlap, template_overhang))
+    elif temrow > shift_index >= imrow:
+        template_overhang_above = template[:shift_index - imrow + 1, :]
+        template_overhang_below = template[shift_index + 1:, :]
+        new_template = np.vstack((template_overhang_above, overlap, template_overhang_below))
+    elif imrow > shift_index >= temrow:
+        image_overhang_above = image[:(imrow - 1) - shift_index]
+        image_overhang_below = image[(imrow - 1) - shift_index + temrow:]
+        new_template = np.vstack((image_overhang_above, overlap, image_overhang_below))
+    elif shift_index >= temrow and shift_index >= imrow:
+        image_overhang = image[len(spatial_shifts) - shift_index:, :]
+        template_overhang_above = template[:shift_index - len(image[:, 0]) + 1, :]
+        new_template = np.vstack((template_overhang_above, overlap, image_overhang))
+
+    return new_template
+
+def nan_pad_images(psds, csds, shifts, already_padded=False):
+    """For plotting purposes, images are padded with nans to match length of template in a way that captures spatial
+    shifts
+    """
+
+    if not already_padded:
+        # given that CSDs are shorter by 2 channels, pad the CSDs with a row of nans on either end.
+        csd_pad = np.empty((1, len(csds[0][0, :])))
+        csd_pad[:] = np.nan
+        for i in range(len(csds)):
+            csds[i] = np.vstack((csd_pad, csds[i], csd_pad))
+    # create matrix equal to final length of template and fill with nans
+    # length
+    imrow, imcol = psds[0].shape
+    csdrow, csdcol = csds[0].shape
+    nan_padded_psds = np.empty((imrow, imcol, len(psds)))
+    nan_padded_psds[:] = np.nan
+    nan_padded_csds = np.empty((imrow, len(csds[0][0, :]), len(psds)))
+    nan_padded_csds[:] = np.nan
+
+    nan_padded_psds[:, :, 0] = psds[0]
+    nan_padded_csds[:, :, 0] = csds[0]
+    for i in range(len(shifts)):
+        shift = shifts[i]
+        psd = psds[i + 1]
+        csd = csds[i + 1]
+        row, col, pen = nan_padded_psds.shape
+        if shift < row and shift < len(psd[:, 0]):
+            pad = np.empty(((len(psd[:, 0]) - (shift + 1)), imcol, len(psds)))
+            pad[:] = np.nan
+            csd_pad = np.empty(((len(psd[:, 0]) - (shift + 1)), csdcol, len(psds)))
+            csd_pad[:] = np.nan
+            nan_padded_psds = np.vstack((pad, nan_padded_psds))
+            nan_padded_csds = np.vstack((csd_pad, nan_padded_csds))
+            nan_padded_psds[:len(psd[:, 0]), :, i + 1] = psd
+            nan_padded_csds[:len(psd[:, 0]), :, i + 1] = csd
+        elif shift < row and shift >= len(psd[:, 0]):
+            nan_padded_psds[(shift + 1)-len(psd[:, 0]):shift+1, :, i+1] = psd
+            nan_padded_csds[(shift + 1)-len(psd[:, 0]):shift+1, :, i+1] = csd
+        elif shift >= row and shift < len(psd[:, 0]):
+            upper_pad = np.empty(((shift + 1 - imrow), imcol, len(psds)))
+            upper_pad[:] = np.nan
+            lower_pad = np.empty((len(psd[:, 0]) - (shift + 1), imcol, len(psds)))
+            lower_pad[:] = np.nan
+            csd_upper_pad = np.empty(((shift + 1 - imrow), csdcol, len(psds)))
+            csd_upper_pad[:] = np.nan
+            csd_lower_pad = np.empty((len(psd[:, 0]) - (shift + 1), csdcol, len(psds)))
+            csd_lower_pad[:] = np.nan
+            nan_padded_psds = np.vstack((lower_pad, nan_padded_psds, upper_pad))
+            nan_padded_csds = np.vstack((csd_lower_pad, nan_padded_csds, csd_upper_pad))
+            nan_padded_psds[:, :, i + 1] = psd
+            nan_padded_csds[:, :, i + 1] = csd
+        elif shift > row and shift > len(psd[:, 0]):
+            pad = np.empty((shift - imrow, imcol, len(psds)))
+            pad[:] = np.nan
+            csd_pad = np.empty((shift - imrow, csdcol, len(psds)))
+            csd_pad[:] = np.nan
+            nan_padded_psds = np.vstack((nan_padded_psds, pad))
+            nan_padded_csds = np.vstack((nan_padded_csds, csd_pad))
+
+    return nan_padded_psds, nan_padded_csds
+
+# Have to make a function to pad a single PSD, CSD based on the template and the shift index
+
+
+def pad_to_template(template, psds, csds, shifts, already_padded=False):
+
+    if not already_padded:
+        # given that CSDs are shorter by 2 channels, pad the CSDs with a row of nans on either end.
+        csd_pad = np.empty((1, len(csds[0][0, :])))
+        csd_pad[:] = np.nan
+        for i in range(len(csds)):
+            csds[i] = np.vstack((csd_pad, csds[i], csd_pad))
+    # create matrix equal to final length of template and fill with nans
+    # length
+    imrow, imcol = template.shape
+    csdrow, csdcol = template.shape
+    nan_padded_psds = np.empty((imrow, imcol, len(psds)))
+    nan_padded_psds[:] = np.nan
+    nan_padded_csds = np.empty((imrow, len(csds[0][0, :]), len(psds)))
+    nan_padded_csds[:] = np.nan
+
+    for i in range(len(shifts)):
+        shift = shifts[i]
+        psd = psds[i]
+        csd = csds[i]
+        row, col, pen = nan_padded_psds.shape
+        if shift < row and shift < len(psd[:, 0]):
+            pad = np.empty(((len(psd[:, 0]) - (shift + 1)), imcol, len(psds)))
+            pad[:] = np.nan
+            csd_pad = np.empty(((len(psd[:, 0]) - (shift + 1)), csdcol, len(psds)))
+            csd_pad[:] = np.nan
+            nan_padded_psds = np.vstack((pad, nan_padded_psds))
+            nan_padded_csds = np.vstack((csd_pad, nan_padded_csds))
+            nan_padded_psds[:len(psd[:, 0]), :, i] = psd
+            nan_padded_csds[:len(psd[:, 0]), :, i] = csd
+        elif shift < row and shift >= len(psd[:, 0]):
+            nan_padded_psds[(shift + 1)-len(psd[:, 0]):shift+1, :, i] = psd
+            nan_padded_csds[(shift + 1)-len(psd[:, 0]):shift+1, :, i] = csd
+        elif shift >= row and shift < len(psd[:, 0]):
+            upper_pad = np.empty(((shift + 1 - imrow), imcol, len(psds)))
+            upper_pad[:] = np.nan
+            lower_pad = np.empty((len(psd[:, 0]) - (shift + 1), imcol, len(psds)))
+            lower_pad[:] = np.nan
+            csd_upper_pad = np.empty(((shift + 1 - imrow), csdcol, len(psds)))
+            csd_upper_pad[:] = np.nan
+            csd_lower_pad = np.empty((len(psd[:, 0]) - (shift + 1), csdcol, len(psds)))
+            csd_lower_pad[:] = np.nan
+            nan_padded_psds = np.vstack((lower_pad, nan_padded_psds, upper_pad))
+            nan_padded_csds = np.vstack((csd_lower_pad, nan_padded_csds, csd_upper_pad))
+            nan_padded_psds[:, :, i] = psd
+            nan_padded_csds[:, :, i] = csd
+        elif shift > row and shift > len(psd[:, 0]):
+            pad = np.empty((shift - imrow, imcol, len(psds)))
+            pad[:] = np.nan
+            csd_pad = np.empty((shift - imrow, csdcol, len(psds)))
+            csd_pad[:] = np.nan
+            nan_padded_psds = np.vstack((nan_padded_psds, pad))
+            nan_padded_csds = np.vstack((nan_padded_csds, csd_pad))
+            nan_padded_psds[:, :, i] = psd
+            nan_padded_csds[:, :, i] = csd
+    return nan_padded_psds, nan_padded_csds

@@ -4,8 +4,16 @@ import numpy as np
 from scipy import fft
 from scipy.signal import welch
 from scipy.fftpack import fftfreq
+import pandas as pd
+from laminar_tools.probe_specific.probe64d import column_split
+from laminar_tools.csd.csd import csd1d
+from joblib import Memory
+
+cachedir = "/auto/users/wingertj/data/cache"
+memory = Memory(cachedir, verbose=0)
 
 
+@memory.cache
 def site_event_lfp(siteid, batch, stim_names, prepoststim, rawlp=100, rawhp=None, fs=300):
     """
     :param fs: sampling rate
@@ -63,6 +71,57 @@ def site_event_lfp(siteid, batch, stim_names, prepoststim, rawlp=100, rawhp=None
     lfp_events = lfp_epochs[:, :, int(stim_time - prepoststim):int(stim_time + prepoststim)]
 
     return stim_list, lfp_events, lfp_epochs, lfp_
+
+@memory.cache
+def parmfile_event_lfp(parmfile):
+
+    # same settings as template
+    rasterfs = 300
+    rawlp = 150
+    rawhp = 1
+    stim_window = 0.1 * rasterfs
+
+    ex = BAPHYExperiment(parmfile=parmfile)
+
+    # load data
+    print("loading data...")
+    rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=False, rawchans=None, stim=False,
+                           rasterfs=rasterfs, rawlp=rawlp, rawhp=rawhp)
+    lfp_ = rec['raw']._data.copy()
+
+    # load channel maps
+    chan_map = pd.read_csv('/auto/users/wingertj/code/csd_project/src/probe_specific/channel_map_64D_reverse.csv',
+                           delimiter=',', header=None, names=["channel number", "x", "y"])
+    left_chan_nums = chan_map.index[chan_map['x'] == -20].tolist()
+    right_chan_nums = chan_map.index[chan_map['x'] == 20].tolist()
+    center_chan_nums = chan_map.index[chan_map['x'] == 0].tolist()
+
+    # find stimulus onset
+    ep = rec['raw'].epochs
+    epoch = ep.loc[ep['name'].str.startswith("PreStimSilence"), 'name'].values[0]
+    epochs = rec['raw'].get_epoch_bounds(epoch)
+    stim_time = int(np.round(np.array(epochs)[0, 1] - np.array(epochs)[0, 0], decimals=2) * rasterfs)
+
+    # extract event epochs
+    lfp_epochs = rec['raw'].extract_epoch('TRIAL')
+
+    # extract window around stimulus
+    lfp_events = lfp_epochs[:, :, int(stim_time - stim_window):int(stim_time + stim_window)]
+
+    # extract data for each column of electrodes
+    left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
+    left_lfp, center_lfp, right_lfp = column_split(lfp_, axis=0)
+
+    # calculate csd for each trial
+    left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
+    for i in range(len(left_lfp_events[:, 0, 0])):
+        left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7)
+
+    left_csd = left_csd.mean(axis=0)
+
+    freqs, power, relative_power = welch_relative_power(left_lfp, rasterfs, nperseg=1024)
+
+    return left_csd, power
 
 
 def coherence_matrix(signal_mat, fs, nperseg):

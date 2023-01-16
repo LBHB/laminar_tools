@@ -89,19 +89,6 @@ for temp_site in sites:
                 template_overhang_above = template[:shift_index-len(image[:, 0])+1, :]
                 template = np.vstack((template_overhang_above, template_overlap, image_overhang))
 
-            # fig, ax = plt.subplots(3, 2)
-            # ax[0, 0].imshow(template, origin='lower', aspect='auto', clim=[0, 1])
-            # ax[0, 0].set_title("template")
-            # ax[0, 1].imshow(image, origin='lower', aspect='auto', clim=[0, 1])
-            # ax[0, 1].set_title("site image")
-            # ax[1, 0].imshow(shifted_template, origin='lower', aspect='auto', clim=[0, 1])
-            # ax[1, 0].set_title("template max similarity")
-            # ax[1, 1].imshow(shifted_image, origin='lower', aspect='auto', clim=[0, 1])
-            # ax[1, 1].set_title("site image max similarity")
-            # ax[2, 0].imshow(template, origin='lower', aspect='auto', clim=[0, 1])
-            # ax[2, 0].set_title("new template")
-            # fig.suptitle(temp_site)
-            # plt.show()
         else:
             continue
     fig, ax = plt.subplots()
