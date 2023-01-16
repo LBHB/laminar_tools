@@ -76,11 +76,10 @@ def site_event_lfp(siteid, batch, stim_names, prepoststim, rawlp=100, rawhp=None
 def parmfile_event_lfp(parmfile):
 
     # same settings as template
-    rasterfs = 300
-    rawlp = 150
+    rasterfs = 500
+    rawlp = 250
     rawhp = 1
-    stim_window = 0.1 * rasterfs
-
+    stim_window = 0.2 * rasterfs
     ex = BAPHYExperiment(parmfile=parmfile)
 
     # load data
@@ -89,18 +88,19 @@ def parmfile_event_lfp(parmfile):
                            rasterfs=rasterfs, rawlp=rawlp, rawhp=rawhp)
     lfp_ = rec['raw']._data.copy()
 
-    # load channel maps
-    chan_map = pd.read_csv('/auto/users/wingertj/code/csd_project/src/probe_specific/channel_map_64D_reverse.csv',
-                           delimiter=',', header=None, names=["channel number", "x", "y"])
-    left_chan_nums = chan_map.index[chan_map['x'] == -20].tolist()
-    right_chan_nums = chan_map.index[chan_map['x'] == 20].tolist()
-    center_chan_nums = chan_map.index[chan_map['x'] == 0].tolist()
+    # remove channel offset - seems to be an issue with neuropixels shouldn't impact anything else
+    offset = lfp_.mean(axis=1)
+    lfp_ = lfp_ - offset[:, np.newaxis]
 
     # find stimulus onset
     ep = rec['raw'].epochs
     epoch = ep.loc[ep['name'].str.startswith("PreStimSilence"), 'name'].values[0]
     epochs = rec['raw'].get_epoch_bounds(epoch)
     stim_time = int(np.round(np.array(epochs)[0, 1] - np.array(epochs)[0, 0], decimals=2) * rasterfs)
+
+    # check that there is a long enough prestimulus window to use same settings as template for CSD else shorten
+    if stim_time < stim_window:
+        stim_window = stim_time
 
     # extract event epochs
     lfp_epochs = rec['raw'].extract_epoch('TRIAL')
@@ -109,19 +109,62 @@ def parmfile_event_lfp(parmfile):
     lfp_events = lfp_epochs[:, :, int(stim_time - stim_window):int(stim_time + stim_window)]
 
     # extract data for each column of electrodes
-    left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
-    left_lfp, center_lfp, right_lfp = column_split(lfp_, axis=0)
+    # check if channel map is returned - if it is returned and channels > 64 assume neuropixel
+    try:
+        channel_xy = rec['raw'].meta['channel_xy']
+    except:
+        channel_xy = [None]
 
-    # calculate csd for each trial
-    left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
-    for i in range(len(left_lfp_events[:, 0, 0])):
-        left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7)
+    if len(channel_xy) > 64:
+        column_xy = {k:v for (k,v) in channel_xy.items() if v[0] == '11'}
+        column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
+        colunn_nums_sorted = [int(ch)-1 for ch in column_xy_sorted]
+        left_lfp = np.take(lfp_, colunn_nums_sorted, axis=0)
+        left_lfp_events = np.take(lfp_events, colunn_nums_sorted, axis=1)
+
+        # calculate csd for each trial
+        left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
+        for i in range(len(left_lfp_events[:, 0, 0])):
+            left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11)
+
+    else:
+        column_xy = {k:v for (k,v) in channel_xy.items() if v[0] == '-20'}
+        column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
+        column_nums_sorted = [int(ch)-1 for ch in column_xy_sorted]
+        left_lfp = np.take(lfp_, column_nums_sorted, axis=0)
+        left_lfp_events = np.take(lfp_events, column_nums_sorted, axis=1)
+
+        # calculate csd for each trial
+        left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
+        for i in range(len(left_lfp_events[:, 0, 0])):
+            left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11)
+        # left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
+        # left_lfp, center_lfp, right_lfp = column_split(lfp_, axis=0)
+        # column_xy_sorted = None
+        #
+        # # calculate csd for each trial
+        # left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
+        # for i in range(len(left_lfp_events[:, 0, 0])):
+        #     left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7)
 
     left_csd = left_csd.mean(axis=0)
 
+    # nan pad csd
+    csd_pad = np.empty((1, len(left_csd[0, :])))
+    csd_pad[:] = np.nan
+    left_csd_padded = np.vstack((csd_pad, left_csd, csd_pad))
+
+    # relative power spectrum
     freqs, power, relative_power = welch_relative_power(left_lfp, rasterfs, nperseg=1024)
 
-    return left_csd, power
+    # channel by channel coherence matrix
+    fx, coh_mat = coherence_matrix(left_lfp, rasterfs, nperseg=1024)
+
+    windowtime = stim_window / rasterfs
+
+    erp = left_lfp_events.mean(axis=0)
+
+    return left_csd_padded, power, freqs, windowtime, rasterfs, column_xy_sorted, channel_xy, coh_mat, erp
 
 
 def coherence_matrix(signal_mat, fs, nperseg):
