@@ -41,6 +41,7 @@ class LaminarModel():
         self.template_landmarkBoolean = True
         self.template_lines = {}
         self.depth_mapped = {}
+        self.figpathroot = "/auto/users/wingertj"
 
     def animals(self, active):
         # get animals:
@@ -228,6 +229,7 @@ class LaminarModel():
         if self._view.ui.localnormradioButton.isChecked():
             self.cmax = self.unpadded_psd_norm.max()
         if site_psd:
+            self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_PSD.pdf")
             im = canvas.ax.imshow(self.psd_norm, origin='lower', aspect='auto', clim=[0, self.cmax])
             canvas.ax.set_xlim(self.freqs[0], self.freqs[-1])
             canvas.ax.set_xlabel("frequency")
@@ -239,12 +241,15 @@ class LaminarModel():
                 canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.channel_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
 
         elif site_csd:
-            canvas.ax.imshow(self.csd, origin='lower', aspect='auto')
+            self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_CSD.pdf")
+            im = canvas.ax.imshow(self.csd, origin='lower', aspect='auto')
             x_ticks = np.linspace(0, len(self.csd[0, :]), 5)
             x_ticklabels = np.round(np.linspace(-self.window, self.window, 5), decimals=2)
             canvas.ax.set_xticks(x_ticks)
             canvas.ax.set_xticklabels(x_ticklabels)
             canvas.ax.set_xlabel("time (s)")
+            cbar = canvas.fig.colorbar(im, cax=canvas.cax, ticks=[self.csd[1:-1, :].max(), self.csd[1:-1, :].min()])
+            cbar.ax.set_yticklabels(['source', 'sink'])
             y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
             if len(self.channel_xy) > 64:
@@ -252,18 +257,21 @@ class LaminarModel():
                 canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.channel_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
 
         elif site_coh:
+            self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_COH.pdf")
             # idx30 = np.where(self.freqs > 30)[0][0]
             # idx150 = np.where(self.freqs < 150)[0][-1]
             idx1 = np.where(self.freqs > 1)[0][0]
             idx15 = np.where(self.freqs < 15)[0][-1]
             gamma_cohmat = np.squeeze(self.coh.mean(axis=0))
-            canvas.ax.imshow(gamma_cohmat, origin='lower', aspect='auto')
+            im = canvas.ax.imshow(gamma_cohmat, origin='lower', aspect='auto')
+            cbar = canvas.fig.colorbar(im, cax=canvas.cax)
             y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
             if len(self.channel_xy) > 64:
                 y_tick_channels = np.take(self.column_xy, y_ticks, axis=0)
                 canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.channel_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
         elif site_erp:
+            self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_ERP.pdf")
             for i in range(len(self.erp[:, 0])):
                 canvas.ax.plot((self.erp[i, :] + 500*i))
         canvas.ax.set_ylabel("channels")
@@ -501,6 +509,22 @@ class LaminarCtrl():
         self.updateanimalcomboBox(active=True)
         self._connectSignals()
 
+    def savecurrentfig(self):
+        if self._view.ui.figsavecheckBox.isChecked():
+            try:
+                import matplotlib.pyplot as plt
+                params = {'axes.spines.right': False,
+                          'axes.spines.top': False,
+                          'pdf.fonttype': 42,
+                          'ps.fonttype': 42}
+                plt.rcParams.update(params)
+                figpath = self._view.ui.figsavelineEdit.text()
+                self._view.ui.siteCanvas.canvas.fig.savefig(figpath)
+            except:
+                print("could not save fig...not valid path?")
+        else:
+            pass
+
     def assign_database(self):
         self._model.depth_mapping_new()
         self._model.depth_mapped
@@ -723,6 +747,7 @@ class LaminarCtrl():
         self._view.ui.resetlandmarkspushButton.clicked.connect(self.linesreset)
         self._view.ui.templatelandmarkcheckBox.toggled.connect(self.template_lines)
         self._view.ui.assignButton.clicked.connect(self.assign_database)
+        self._view.ui.figsavepushButton.clicked.connect(self.savecurrentfig)
 
 def main():
     """Main function."""
