@@ -51,7 +51,9 @@ class LaminarModel():
         if require_active:
             sql += " AND onschedule<2"
         dAnimal = db.pd_query(sql)
-        self.animallist = dAnimal['animal'].to_list()
+        animallist = dAnimal['animal'].to_list()
+        animallist.sort()
+        self.animallist = animallist
 
     def sites(self, animal):
         runclass = None
