@@ -94,8 +94,8 @@ class LaminarModel():
         self.template_csd = template_csd
 
     def site_csd_psd(self, parmfile, align=True):
-        csd, psd, freqs, stim_window, rasterfs, column_xy, channel_xy, coh_mat, erp = parmfile_event_lfp(parmfile)
-        max_power = psd.max(axis=0)
+        csd, psd, freqs, stim_window, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, erp, probe = parmfile_event_lfp(parmfile)
+        max_power = np.nanmax(psd, axis=0)
         if align:
             averaged_template, ssim_index, ssim = maximal_laminar_similarity(template=self.template_psd, image=psd, overlap=10,
                                                                              ssim_window=5, expansion=True)
@@ -124,7 +124,9 @@ class LaminarModel():
         self.site_max_power = max_power
         self.csd = csd
         self.column_xy = column_xy
+        self.column_keys = column_xy_sorted
         self.channel_xy = channel_xy
+        self.probe = probe
 
     def no_normalization(self):
         self.psd_norm = self.psd
@@ -238,9 +240,9 @@ class LaminarModel():
             canvas.fig.colorbar(im, cax=canvas.cax)
             y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
-            if len(self.channel_xy) > 64:
-                y_tick_channels = np.take(self.column_xy, y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.channel_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+            if self.probe == 'NPX':
+                y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
 
         elif site_csd:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_CSD.pdf")
@@ -254,9 +256,9 @@ class LaminarModel():
             cbar.ax.set_yticklabels(['source', 'sink'])
             y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
-            if len(self.channel_xy) > 64:
-                y_tick_channels = np.take(self.column_xy, y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.channel_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+            if self.probe == 'NPX':
+                y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
 
         elif site_coh:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_COH.pdf")
@@ -269,9 +271,9 @@ class LaminarModel():
             cbar = canvas.fig.colorbar(im, cax=canvas.cax)
             y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
-            if len(self.channel_xy) > 64:
-                y_tick_channels = np.take(self.column_xy, y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.channel_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+            if self.probe == 'NPX':
+                y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
         elif site_erp:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_ERP.pdf")
             for i in range(len(self.erp[:, 0])):
@@ -401,7 +403,7 @@ class LaminarModel():
         if site_area == '':
             raise ValueError('Please input a site: A1, PEG')
         active_landmarks = [k for (k, v) in self.landmarkBoolean.items() if v == True]
-        active_positions = [int(self.channel_xy[self.column_xy[int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
+        active_positions = [int(self.column_xy[self.column_keys[int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
         active_assignments = [self._view.ui.layerBorders[lm] for lm in active_landmarks]
 
         if len(active_landmarks) < 2:

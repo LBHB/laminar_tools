@@ -1,6 +1,8 @@
+import numpy
 from scipy.ndimage import maximum_filter, binary_erosion
 import numpy as np
 from scipy.signal import convolve2d
+from laminar_tools.utils.utils import nan_split_2D
 
 # def csd1d(lfp, ch_spacing, filter_width):
 #     """
@@ -23,14 +25,62 @@ from scipy.signal import convolve2d
 #         csd[ch, :] = (vb + va - 2 * v0) / (2*ch_spacing) ** 2
 #     return csd
 
-def csd1d(lfp, filter_width):
-    # spatial fiter data to remove electrode to electrode jitter
-    spatial_filter = np.hamming(filter_width)[:, np.newaxis]
-    spatial_filter = spatial_filter / spatial_filter.sum()
-    spatialfilt_lfp = convolve2d(lfp, spatial_filter, mode='same', boundary='symm')
 
-    csd = np.diff(spatialfilt_lfp, n=2, axis=0)
+def csd1d(lfp, filter_width, contains_nan=True, nan_axis=0):
+    if contains_nan:
+        nan_split = nan_split_2D(lfp, axis=nan_axis)
+        nan_split_csd = []
+        for data_group in nan_split:
+            if numpy.isnan(data_group).any():
+                nan_split_csd.append(data_group)
+            else:
+                # spatial fiter data to remove electrode to electrode jitter
+                spatial_filter = np.hamming(filter_width)[:, np.newaxis]
+                spatial_filter = spatial_filter / spatial_filter.sum()
+                spatialfilt_lfp = convolve2d(data_group, spatial_filter, mode='same', boundary='symm')
+
+                csd = np.diff(spatialfilt_lfp, n=2, axis=0)
+
+                # nan pad csd
+                csd_pad = np.empty((1, len(lfp[0, :])))
+                csd_pad[:] = np.nan
+                csd = np.vstack((csd_pad, csd, csd_pad))
+                nan_split_csd.append(csd)
+        csd = np.vstack(nan_split_csd)
+
+    else:
+        # lfp_nan_mask = np.isnan(lfp)
+        # lfp[lfp_nan_mask] = 0
+        # spatial fiter data to remove electrode to electrode jitter
+        spatial_filter = np.hamming(filter_width)[:, np.newaxis]
+        spatial_filter = spatial_filter / spatial_filter.sum()
+        spatialfilt_lfp = convolve2d(lfp, spatial_filter, mode='same', boundary='symm')
+
+        csd = np.diff(spatialfilt_lfp, n=2, axis=0)
+
+        # nan pad csd
+        csd_pad = np.empty((1, len(lfp[0, :])))
+        csd_pad[:] = np.nan
+        csd = np.vstack((csd_pad, csd, csd_pad))
+
     return csd
+
+
+# def nan_split_2D(data, axis=0):
+#     if axis == 0:
+#         nan_list = data[:, 0]
+#     elif axis == 1:
+#         nan_list = data[0, :]
+#     else:
+#         raise ValueError("axis must be 0 or 1")
+#     nan_list.ravel
+#     nan_bool = np.isnan(nan_list)
+#     nan_int = [-1 if x == False else 1 for x in nan_bool]
+#     nan_index = list(np.where([(x-y) != 0 for x, y in zip(nan_int, nan_int[1:])])[0]+1)
+#     data_split = numpy.split(data, nan_index, axis=axis)
+#     return data_split
+
+
 
 def detect_peaks(image, neighbors=None, threshold=0.5):
     """
