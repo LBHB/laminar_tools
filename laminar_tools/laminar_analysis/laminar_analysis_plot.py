@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def ssim_step_plot(penetration_sites, template_steps, csd_steps, step_index, ssim_scores, fs):
+def ssim_step_plot(penetration_sites, template_steps, csd_steps, step_index, ssim_scores, fs, temp_norm=False):
     avg_template = np.nanmean(template_steps, axis=2)
     avg_csd = np.nanmean(csd_steps, axis=2)
     max_power = avg_template.max(axis=0)
@@ -14,7 +14,11 @@ def ssim_step_plot(penetration_sites, template_steps, csd_steps, step_index, ssi
     axs[0, 0].imshow(template_steps[:, :, 0]/max_power, origin='lower', aspect='auto', extent=[0, 250, 0, len(relative_power_template[:, 0])])
     axs[1, 0].imshow(csd_steps[:, :, 0], origin='lower', aspect='auto', extent=[-(len(csd_steps[0, :, 0])/2)/fs, (len(csd_steps[0, :, 0])/2)/fs, 0, len(avg_csd[:, 0])])
     for i in range(len(step_index)):
-        axs[0, i+1].imshow(template_steps[:, :, i+1]/max_power, origin='lower', aspect='auto', extent=[0, 250, 0, len(relative_power_template[:, 0])])
+        if temp_norm:
+            axs[0, i+1].imshow(template_steps[:, :, i+1]/max_power, origin='lower', aspect='auto', extent=[0, 250, 0, len(relative_power_template[:, 0])])
+        else:
+            axs[0, i + 1].imshow(template_steps[:, :, i + 1] / template_steps[:, :, i+1][~np.isnan(template_steps[:, :, i+1]).any(axis=1)].max(axis=0), origin='lower', aspect='auto',
+                             extent=[0, 250, 0, len(relative_power_template[:, 0])])
         axs[1, i+1].imshow(csd_steps[:, :, i+1], origin='lower', aspect='auto', extent=[-(len(csd_steps[0, :, 0])/2)/fs, (len(csd_steps[0, :, 0])/2)/fs, 0, len(avg_csd[:, 0])])
         axs[0, i+1].set_title(penetration_sites[i + 1] + "\n score: " + str(round(ssim_scores[i], 2)))
         axs[0, i+1].set_xlabel('frequency')

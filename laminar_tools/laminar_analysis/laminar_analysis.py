@@ -7,6 +7,7 @@ from laminar_tools.probe_specific.probe64d import column_split
 from laminar_tools.probe_specific.NHP_neuropixelPhase3A import column_split_npx
 from skimage.metrics import structural_similarity as ssim
 
+
 def column_data_64D(column, siteid, mua_, lfp_, lfp_events, stim_window, rasterfs, neighborhood, threshold):
     """
 
@@ -415,6 +416,7 @@ def aligned_csd_psd(parmfile):
 
     return nan_pad_csd, nan_pad_csd, ssim
 
+
 def maximal_laminar_similarity(template, image, overlap=10, ssim_window=5, expansion=True):
     """
     One dimensional (row) alignment of an image to a template image based on structural similarity score. Uses a
@@ -469,6 +471,7 @@ def maximal_laminar_similarity(template, image, overlap=10, ssim_window=5, expan
         new_template = template_overlap
 
     return new_template, shift_index, max(shift_similarity)
+
 
 def post_ssim_avg_csd(csd_steps, step_index):
 
@@ -640,6 +643,7 @@ def expand(template, image, spatial_shifts, overlap, shift_index):
         new_template = np.vstack((template_overhang_above, overlap, image_overhang))
 
     return new_template
+
 
 def nan_pad_images(psds, csds, shifts, already_padded=False):
     """For plotting purposes, images are padded with nans to match length of template in a way that captures spatial
