@@ -17,6 +17,7 @@ from functools import partial
 from pathlib import Path
 import json
 from scipy.interpolate import interp1d
+from nems_lbhb import baphy_io as io
 
 class LaminarUi(QWidget):
     def __init__(self, *args, **kwargs):
@@ -78,7 +79,7 @@ class LaminarModel():
         # get parmfiles for siteid
         parmfiles = dRawFiles['parmfile'].to_list()
         self.parmfilelist = parmfiles
-
+        self.siteids = dRawFiles['cellid'].to_list()
         # get rawids for siteid
         self.rawids = dRawFiles['id'].to_list()
 
@@ -472,7 +473,7 @@ class LaminarModel():
             y_in = np.array([upper_position, lower_position])
             y_out = np.array([upper_assignment, lower_assignment])
             f = interp1d(y_in, y_out, fill_value='extrapolate')
-            channel_dict[ch] = [location_label, int(f(channel_position))]
+            channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
         complete_dict = {}
         complete_dict['channel info'] = channel_dict
         complete_dict['parmfile'] = self.parmfile
@@ -543,6 +544,13 @@ class LaminarCtrl():
                 sql = f"UPDATE gDataRaw set depthinfo='{depthstring}' WHERE id={rawid}"
                 sql
                 db.sql_command(sql)
+
+        uniqueids = list(set(self._model.siteids))
+        for siteid in uniqueids:
+            try:
+                io.get_spike_info(siteid=siteid, save_to_db=True)
+            except:
+                print("Spike info not found. Still needs to be sorted?")
         self.update_siteList(self._view.ui.sitecomboBox.currentIndex())
 
     def updateanimalcomboBox(self, active):

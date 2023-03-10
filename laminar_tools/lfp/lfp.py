@@ -8,10 +8,11 @@ import pandas as pd
 from laminar_tools.probe_specific.probe64d import column_split
 from laminar_tools.csd.csd import csd1d
 from joblib import Memory
+import os
+
 
 cachedir = "/auto/users/wingertj/data/cache"
 memory = Memory(cachedir, verbose=0)
-
 
 @memory.cache
 def site_event_lfp(siteid, batch, stim_names, prepoststim, rawlp=100, rawhp=None, fs=300):
@@ -28,7 +29,7 @@ def site_event_lfp(siteid, batch, stim_names, prepoststim, rawlp=100, rawhp=None
 
     # load lfp data
     ex = BAPHYExperiment(batch=batch, cellid=siteid)
-    rec = ex.get_recording(raw=True, pupil=False, resp=False, stim=False, recache=False, rawchans=None, rasterfs=fs,
+    rec = ex.get_recording(raw=True, pupil=False, resp=False, stim=False, recache=True, rawchans=None, rasterfs=fs,
                            rawlp=rawlp, rawhp=rawhp)
     lfp_ = rec['raw']._data.copy()
 
@@ -72,6 +73,7 @@ def site_event_lfp(siteid, batch, stim_names, prepoststim, rawlp=100, rawhp=None
 
     return stim_list, lfp_events, lfp_epochs, lfp_
 
+
 @memory.cache
 def parmfile_event_lfp(parmfile):
 
@@ -84,7 +86,7 @@ def parmfile_event_lfp(parmfile):
 
     # load data
     print("loading data...")
-    rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=False, rawchans=None, stim=False,
+    rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=True, rawchans=None, stim=False,
                            rasterfs=rasterfs, rawlp=rawlp, rawhp=rawhp)
     lfp_ = rec['raw']._data.copy()
 
@@ -249,6 +251,7 @@ def channel_power(lfp, fs, bin_size=0.5):
             resampled_freqs = np.linspace(0, int(fs / 2), int((fs / 2) / bin_size))
 
     return freqs, powspec, resampled_freqs, resampled_powspec
+
 
 def welch_relative_power(lfp, fs, nperseg):
     """
