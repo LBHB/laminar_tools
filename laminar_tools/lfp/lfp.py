@@ -9,7 +9,11 @@ from laminar_tools.probe_specific.probe64d import column_split
 from laminar_tools.csd.csd import csd1d
 from joblib import Memory
 
-cachedir = "/auto/users/wingertj/data/cache"
+import getpass
+linux_user = getpass.getuser()
+
+
+cachedir = f"/auto/users/{linux_user}/data/cache"
 memory = Memory(cachedir, verbose=0)
 
 
