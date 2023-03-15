@@ -32,7 +32,9 @@ class LaminarModel():
         self._view = view
         self.load_template()
         self.template_landmarks = list(self._view.ui.layerBorders.keys())
-        self.template_landmarkPosition = {'BS/1': 28, '3/4': 18, '4/5': 12, '6/WM': 5, 'WM/HC': 0}
+        self.template_landmarkPosition = {'BS/1': 28, '3/4': 18, '4/5': 12,
+                                          '6/6d': 5, '5d/4d': 4, '4d/3d': 2, '3d/Bd': 0,
+                                          '6/WM': 5, 'WM/HC': 0}
         self.template_lines = {}
         self.landmarks = self.template_landmarks
         self.landmarkPosition = {border: self.template_landmarkPosition[border] for border in self.landmarks}
@@ -403,6 +405,7 @@ class LaminarModel():
         site_area = self._view.ui.areatext.toPlainText()
         if site_area == '':
             raise ValueError('Please input a site: A1, PEG')
+        site_area_deep = self._view.ui.areatextdeep.toPlainText()
         active_landmarks = [k for (k, v) in self.landmarkBoolean.items() if v == True]
         active_positions = [int(self.column_xy[self.column_keys[int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
         active_assignments = [self._view.ui.layerBorders[lm] for lm in active_landmarks]
@@ -478,6 +481,7 @@ class LaminarModel():
         complete_dict['channel info'] = channel_dict
         complete_dict['parmfile'] = self.parmfile
         complete_dict['site area'] = site_area
+        complete_dict['site area deep'] = site_area_deep
         self.depth_mapped = {**complete_dict, **position_memory}
 
     def load_depth_from_db(self):

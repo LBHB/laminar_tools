@@ -12,9 +12,11 @@ from mplwidget import MplWidget
 
 class Ui_mainWidget(object):
     def setupUi(self, mainWidget):
-        self.layerBorders = {'BS/1': -800, '3/4': 0, '4/5':200, '6/WM':800, 'WM/HC':2700}
+        self.layerBorders = {'BS/1': -800, '3/4': 0, '4/5':200,
+                             '6/6d': 800, '5d/4d': 1600, '4d/3d': 1800, '3d/Bd': 2600,
+                             '6/WM':800, 'WM/HC':2700}
         mainWidget.setObjectName("mainWidget")
-        mainWidget.resize(1150, 550)
+        mainWidget.resize(1150, 600)
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
@@ -91,6 +93,11 @@ class Ui_mainWidget(object):
         self.siteList.setSizePolicy(sizePolicy)
         self.siteList.setMinimumSize(QtCore.QSize(300, 300))
         self.siteList.setColumnCount(3)
+        self.siteList.setColumnWidth(0,200)
+        self.siteList.setColumnWidth(1,50)
+        #self.siteList.setColumnWidth(2,60)
+        #self.siteList.setColumnWidth(3,40)
+
         self.siteList.setObjectName("siteList")
         self.verticalLayout.addWidget(self.siteList)
         self.horizontalLayout_4 = QtWidgets.QHBoxLayout()
@@ -219,8 +226,15 @@ class Ui_mainWidget(object):
         self.verticalLayout_6.addWidget(self.arealabel)
         self.areatext = QtWidgets.QTextEdit(self.landmarkcomboBox)
         self.areatext.setObjectName("areatext")
-        self.verticalLayout_6.addWidget(self.areatext)
         self.areatext.setMaximumSize(QtCore.QSize(180, 30))
+        self.verticalLayout_6.addWidget(self.areatext)
+        self.arealabeldeep = QtWidgets.QLabel(self.landmarkgroupBox)
+        self.arealabeldeep.setObjectName("arealabeldeep")
+        self.verticalLayout_6.addWidget(self.arealabeldeep)
+        self.areatextdeep = QtWidgets.QTextEdit(self.landmarkcomboBox)
+        self.areatextdeep.setObjectName("areatextdeep")
+        self.verticalLayout_6.addWidget(self.areatextdeep)
+        self.areatextdeep.setMaximumSize(QtCore.QSize(180, 30))
         self.lineresetButton = QtWidgets.QPushButton(self.landmarkgroupBox)
         self.lineresetButton.setObjectName("lineresetButton")
         self.verticalLayout_6.addWidget(self.lineresetButton )
@@ -339,6 +353,7 @@ class Ui_mainWidget(object):
         self.sitelandmarkcheckBox.setText(_translate("mainWidget", "Site landmarks"))
         self.label_2.setText(_translate("mainWidget", "Site landmarks"))
         self.arealabel.setText(_translate("mainWidget", "Cortical area"))
+        self.arealabeldeep.setText(_translate("mainWidget", "Deep area"))
         self.label.setText(_translate("mainWidget", "Active landmark"))
         self.lineresetButton.setText(_translate("mainWidget", "Reset current"))
         self.resetlandmarkspushButton.setText(_translate("mainWidget", "Reset all"))
