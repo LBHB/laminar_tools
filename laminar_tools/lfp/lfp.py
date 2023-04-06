@@ -161,7 +161,8 @@ def parmfile_event_lfp(parmfile):
                 # calculate csd for each trial
                 left_csd = np.zeros_like(left_lfp_events[:, :, :])
                 for i in range(len(left_lfp_events[:, 0, 0])):
-                    left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=True, nan_axis=0)
+                    # left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=True, nan_axis=0)
+                    left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 17, contains_nan=True, nan_axis=0)
         else:
             # calculate csd for each trial
             left_csd = np.zeros_like(left_lfp_events[:, :, :])
@@ -176,7 +177,7 @@ def parmfile_event_lfp(parmfile):
         left_lfp_events = np.take(lfp_events, column_nums_sorted, axis=1)
 
         # calculate csd for each trial
-        left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
+        left_csd = np.zeros_like(left_lfp_events[:, :, :])
         for i in range(len(left_lfp_events[:, 0, 0])):
             left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7, contains_nan=False)
         # left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
