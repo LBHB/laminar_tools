@@ -97,6 +97,7 @@ class LaminarModel():
         self.template_csd = template_csd
 
     def site_csd_psd(self, parmfile, align=True):
+        self.load_template()
         csd, psd, freqs, stim_window, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, erp, probe = parmfile_event_lfp(parmfile)
         max_power = np.nanmax(psd, axis=0)
         if align:
@@ -107,11 +108,13 @@ class LaminarModel():
             ssim_index_list = [ssim_index, ]
             self.ssim = ssim
             self.ssim_index = ssim_index
-            nan_pad_psd, nan_pad_csd, padding = pad_to_template(self.template_psd, psd, csd, ssim_index_list, already_padded=True)
+            nan_pad_psd, nan_pad_csd, padding, template, template_csd = pad_to_template(self.template_psd, self.template_csd, psd, csd, ssim_index_list, already_padded=True)
+            self.template_psd = template
+            self.template_csd = template_csd
             self.padding = padding
-            upper_pad = np.empty((len(coh_mat[:, 0, 0]), padding[1], len(coh_mat[0,:])))
+            upper_pad = np.empty((len(coh_mat[:, 0, 0]), int(padding[1]), len(coh_mat[0,:])))
             upper_pad[:] = np.nan
-            lower_pad = np.empty((len(coh_mat[:, 0, 0]), padding[0], len(coh_mat[0,:])))
+            lower_pad = np.empty((len(coh_mat[:, 0, 0]), int(padding[0]), len(coh_mat[0,:])))
             lower_pad[:] = np.nan
             coh_mat = np.concatenate((lower_pad, coh_mat, upper_pad), axis=1)
             psd = np.squeeze(nan_pad_psd)
@@ -211,7 +214,7 @@ class LaminarModel():
         print('plotting laminar data...')
         self.clear_canvas(canvas)
         if self._view.ui.localnormradioButton.isChecked():
-            self.cmax = self.template_psd_norm.max()
+            self.cmax = np.nanmax(self.template_psd_norm)
         if temp_psd:
             im = canvas.ax.imshow(self.template_psd_norm, origin='lower', aspect='auto', clim=[0, self.cmax])
             canvas.ax.set_xlim(self.freqs[0], self.freqs[-1])
