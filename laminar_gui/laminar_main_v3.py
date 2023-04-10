@@ -288,6 +288,7 @@ class LaminarModel():
         canvas.ax.set_title(str(self.parmfile))
         self.draw_lines(canvas.ax)
 
+
     def clear_canvas(self, canvas):
         canvas.ax.clear()
         canvas.cax.clear()
@@ -500,6 +501,9 @@ class LaminarModel():
             for landmark in list(loadedds['landmarkPosition'].keys()):
                 self.landmarkPosition[landmark] = loadedds['landmarkPosition'][landmark]
         self.landmarkBoolean = loadedds['landmarkBoolean']
+        self.area = loadedds['site area']
+        self.area_deep = loadedds['site area deep']
+
 
     def load_area_from_db(self):
         sql = f"SELECT * from gCellMaster WHERE cellid='{self.siteid}'"
@@ -519,6 +523,8 @@ class LaminarCtrl():
         self._view = view
         self._model = model
         self.updateanimalcomboBox(active=True)
+        self.update_siteComboBox(index=0)
+        self.update_siteList(index=0)
         self._connectSignals()
 
     def savecurrentfig(self):
@@ -655,7 +661,14 @@ class LaminarCtrl():
         parmfilepath = [rawpath/animalid/self._model.siteid/self._model.parmfile]
         self._model.site_csd_psd(parmfilepath, align=align)
         if db_available != 'No':
+            # load saved depth data
             self._model.load_depth_from_db()
+            # reassign gui settings - checkboxes and text
+            for landmark, landbool in self._model.landmarkBoolean.items():
+                if landbool:
+                    self._view.ui.layerCheckBoxes[landmark].setChecked(landbool)
+            self._view.ui.areatext.setText(self._model.area)
+            self._view.ui.areatextdeep.setText(self._model.area_deep)
         self.normalization()
         self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
         self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
@@ -663,6 +676,7 @@ class LaminarCtrl():
                               self._view.ui.siteERPradioButton.isChecked())
         self._view.ui.templateCanvas.canvas.draw()
         self._view.ui.siteCanvas.canvas.draw()
+        self.lineconnect()
 
     def update_plots(self):
         template_psd_requested = self._view.ui.tempPSDradioButton.isChecked()
@@ -677,6 +691,7 @@ class LaminarCtrl():
                               self._view.ui.siteERPradioButton.isChecked())
         self._view.ui.templateCanvas.canvas.draw()
         self._view.ui.siteCanvas.canvas.draw()
+        self.lineconnect()
 
     def updatelandmarkcomboBox(self, sepName, checkbox):
         print(f'updating dropdown with {sepName}...')
