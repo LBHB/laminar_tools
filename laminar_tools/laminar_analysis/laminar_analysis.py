@@ -710,7 +710,7 @@ def nan_pad_images(psds, csds, shifts, already_padded=False):
 
 def pad_to_template(template, template_csd, psds, csds, shifts, already_padded=False):
     """
-    function to pad a single PSD, CSD based on the template and the shift index
+    function to pad a single PSD, CSD based on the template and the shift index - heavily kludged - might not work for all cases
     """
     if not already_padded:
         # given that CSDs are shorter by 2 channels, pad the CSDs with a row of nans on either end.
@@ -722,7 +722,7 @@ def pad_to_template(template, template_csd, psds, csds, shifts, already_padded=F
     # length. If shift is greater than template length, will need to pad both template and image to equal length.
     imrow, imcol = template.shape
     csdrow, csdcol = csds[0].shape
-    if shifts[0] <= imrow:
+    if (shifts[0] <= imrow) and (shifts[0] > len(psds[0][:, 0])):
         nan_padded_psds = np.empty((imrow, imcol, len(psds)))
         nan_padded_psds[:] = np.nan
         nan_padded_csds = np.empty((imrow, len(csds[0][0, :]), len(psds)))
@@ -732,6 +732,11 @@ def pad_to_template(template, template_csd, psds, csds, shifts, already_padded=F
         nan_padded_psds[:] = np.nan
         nan_padded_csds = np.empty((shifts[0], len(csds[0][0, :]), len(psds)))
         nan_padded_csds[:] = np.nan
+    elif (shifts[0] < len(psds[0][:, 0])) and (shifts[0] < imrow):
+        nan_padded_psds = np.empty(((len(psds[0][:, 0]) - shifts[0] + imrow), imcol, len(psds)))
+        nan_padded_psds[:] = np.nan
+        nan_padded_csds = np.empty(((len(psds[0][:, 0]) - shifts[0] + imrow), len(csds[0][0, :]), len(psds)))
+        nan_padded_csds[:] = np.nan
 
     for i in range(len(shifts)):
         shift = shifts[i]
@@ -739,15 +744,18 @@ def pad_to_template(template, template_csd, psds, csds, shifts, already_padded=F
         csd = csds[i]
         row, col, pen = nan_padded_psds.shape
         if shift < imrow and shift < len(psd[:, 0]):
-            upper_pad = np.empty(((len(psd[:, 0]) - (shift + 1)), imcol, len(psds)))
-            upper_pad[:] = np.nan
+            # find pad for template - need to pad lower
+            lower_pad_template = np.empty(((len(psds[0][:, 0]) - shifts[0]), imcol))
+            lower_pad_template[:] = np.nan
+            lower_pad_csdtemplate = np.empty(((len(psds[0][:, 0]) - shifts[0]), len(csds[0][0, :])))
+            lower_pad_csdtemplate[:] = np.nan
+            # should be no lower pad because shift is less than image
+            upper_pad = len(nan_padded_psds[:, 0, 0]) - len(psd[:, 0])
             lower_pad = False
-            csd_pad = np.empty(((len(psd[:, 0]) - (shift + 1)), csdcol, len(psds)))
-            csd_pad[:] = np.nan
-            nan_padded_psds = np.vstack((upper_pad, nan_padded_psds))
-            nan_padded_csds = np.vstack((csd_pad, nan_padded_csds))
             nan_padded_psds[:len(psd[:, 0]), :, i] = psd
             nan_padded_csds[:len(psd[:, 0]), :, i] = csd
+            template = np.vstack((lower_pad_template, template))
+            template_csd = np.vstack((lower_pad_csdtemplate, template_csd))
         elif shift < imrow and shift >= len(psd[:, 0]):
             nan_padded_psds[(shift + 1)-len(psd[:, 0]):shift+1, :, i] = psd
             nan_padded_csds[(shift + 1)-len(psd[:, 0]):shift+1, :, i] = csd
