@@ -287,6 +287,15 @@ class Ui_mainWidget(object):
         self.figsavepushButton = QtWidgets.QPushButton(self.verticalLayoutWidget)
         self.figsavepushButton.setObjectName("figsavepushButton")
         self.verticalLayout_9.addWidget(self.figsavepushButton)
+
+        self.themegroupBox = QtWidgets.QGroupBox(self.Settings)
+        self.themegroupBox.setGeometry(QtCore.QRect(9, 309, 191, 70))
+        self.themegroupBox.setObjectName("themegroupBox")
+        self.themeverticalLayout = QtWidgets.QVBoxLayout(self.themegroupBox)
+        self.themecheckBox = QtWidgets.QCheckBox(self.themegroupBox)
+        self.themecheckBox.setObjectName("themecheckBox")
+        self.themeverticalLayout.addWidget(self.themecheckBox)
+
         self.plotsettingstabWidget.addTab(self.Settings, "")
         self.gridLayout.addWidget(self.plotsettingstabWidget, 0, 3, 3, 2)
         self.gridLayout_2.addLayout(self.gridLayout, 0, 0, 1, 1)
@@ -370,6 +379,8 @@ class Ui_mainWidget(object):
         self.figsavecheckBox.setText(_translate("mainWidget", "Save fig?"))
         self.figsavepushButton.setText(_translate("mainWidget", "Save"))
         self.figsavelabel.setText(_translate("mainWidget", "Path"))
+        self.themegroupBox.setTitle(_translate("mainWidget", "Theme"))
+        self.themecheckBox.setText(_translate("mainWidget", "Greg mode"))
 
 if __name__ == "__main__":
     import sys

@@ -8,6 +8,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import matplotlib.lines as lines
 from PyQt5.QtWidgets import QApplication, QWidget, QTreeWidgetItem
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPalette, QColor
 from nems0 import db
 from nems_lbhb.baphy_experiment import BAPHYExperiment
 from laminar_tools.lfp.lfp import parmfile_event_lfp
@@ -526,6 +528,7 @@ class LaminarCtrl():
         self.update_siteComboBox(index=0)
         self.update_siteList(index=0)
         self._connectSignals()
+        self.default_palette = self._view.palette()
 
     def savecurrentfig(self):
         if self._view.ui.figsavecheckBox.isChecked():
@@ -565,6 +568,31 @@ class LaminarCtrl():
             except:
                 print("Spike info not found. Still needs to be sorted?")
         self.update_siteList(self._view.ui.sitecomboBox.currentIndex())
+
+    def changeTheme(self):
+        if self._view.ui.themecheckBox.isChecked():
+            dark_palette = QPalette()
+            dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.WindowText, Qt.white)
+            dark_palette.setColor(QPalette.Base, QColor(35, 35, 35))
+            dark_palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.ToolTipBase, QColor(25, 25, 25))
+            dark_palette.setColor(QPalette.ToolTipText, Qt.white)
+            dark_palette.setColor(QPalette.Text, Qt.white)
+            dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.ButtonText, Qt.white)
+            dark_palette.setColor(QPalette.BrightText, Qt.red)
+            dark_palette.setColor(QPalette.Link, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.HighlightedText, QColor(35, 35, 35))
+            dark_palette.setColor(QPalette.Active, QPalette.Button, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.Disabled, QPalette.ButtonText, Qt.darkGray)
+            dark_palette.setColor(QPalette.Disabled, QPalette.WindowText, Qt.darkGray)
+            dark_palette.setColor(QPalette.Disabled, QPalette.Text, Qt.darkGray)
+            dark_palette.setColor(QPalette.Disabled, QPalette.Light, QColor(53, 53, 53))
+            self._view.setPalette(dark_palette)
+        else:
+            self._view.setPalette(self.default_palette)
 
     def updateanimalcomboBox(self, active):
         self._view.ui.animalcomboBox.clear()
@@ -782,6 +810,7 @@ class LaminarCtrl():
         self._view.ui.templatelandmarkcheckBox.toggled.connect(self.template_lines)
         self._view.ui.assignButton.clicked.connect(self.assign_database)
         self._view.ui.figsavepushButton.clicked.connect(self.savecurrentfig)
+        self._view.ui.themecheckBox.toggled.connect(self.changeTheme)
 
 def main():
     """Main function."""
