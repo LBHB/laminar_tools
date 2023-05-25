@@ -416,7 +416,7 @@ class LaminarModel():
         active_positions = [int(self.column_xy[self.column_keys[int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
         active_assignments = [self._view.ui.layerBorders[lm] for lm in active_landmarks]
 
-        if len(active_landmarks) < 2:
+        if (len(active_landmarks) < 2) and (self._view.ui.badsitecheckBox.isChecked() == False):
             raise ValueError("Need more than 1 landmark...")
         # sort all channels based on depth - for each channel find closest landmark. If landmark is higher up, then check and see if there is landmark one index lower.
         # If there is a landmark one index lower, create an interp1d mapping between the two landmarks and their assignments. Remap the channel with
@@ -434,8 +434,16 @@ class LaminarModel():
         for ch in list(self.channel_xy.keys()):
             # find closest active channel
             channel_position = int(self.channel_xy[ch][1])
-            min_index = abs(np.array(active_positions) - channel_position).argmin()
-            if channel_position <= active_positions[min_index]:
+            # This isn't a good solution to the problem (-Jereme and Greg 2023_04_13)
+            try:
+                min_index = abs(np.array(active_positions) - channel_position).argmin()
+            except:
+                pass
+            if self._view.ui.badsitecheckBox.isChecked():
+                electrode_depth = 'NA'
+                location_label = electrode_depth
+
+            elif channel_position <= active_positions[min_index]:
                 try:
                     lower_landmark = active_landmarks[min_index+1]
                     upper_landmark = active_landmarks[min_index]
@@ -478,11 +486,13 @@ class LaminarModel():
                     lower_top, lower_bottom = lower_landmark.split('/')
                     upper_top, upper_bottom = upper_landmark.split('/')
                     location_label = upper_top
-
-            y_in = np.array([upper_position, lower_position])
-            y_out = np.array([upper_assignment, lower_assignment])
-            f = interp1d(y_in, y_out, fill_value='extrapolate')
-            channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
+            try:
+                y_in = np.array([upper_position, lower_position])
+                y_out = np.array([upper_assignment, lower_assignment])
+                f = interp1d(y_in, y_out, fill_value='extrapolate')
+                channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
+            except:
+                channel_dict[ch] = [location_label, location_label, channel_position]
         complete_dict = {}
         complete_dict['channel info'] = channel_dict
         complete_dict['parmfile'] = self.parmfile
@@ -503,9 +513,12 @@ class LaminarModel():
             for landmark in list(loadedds['landmarkPosition'].keys()):
                 self.landmarkPosition[landmark] = loadedds['landmarkPosition'][landmark]
         self.landmarkBoolean = loadedds['landmarkBoolean']
-        self.area = loadedds['site area']
-        self.area_deep = loadedds['site area deep']
-
+        try:
+            self.area = loadedds['site area']
+            self.area_deep = loadedds['site area deep']
+        except:
+            self.area = ''
+            self.area_deep = ''
 
     def load_area_from_db(self):
         sql = f"SELECT * from gCellMaster WHERE cellid='{self.siteid}'"
@@ -787,6 +800,12 @@ class LaminarCtrl():
         self._model.draw_lines(self._view.ui.siteCanvas.canvas.ax)
         self.lineconnect()
 
+    def landmarkreset(self):
+        self._model.landmarkBoolean = {key:False for key in self._model.landmarkBoolean.keys()}
+        for boxName, checkBox in self._view.ui.layerCheckBoxes.items():
+            checkBox.setChecked(False)
+        self.update_plots()
+
     def _connectSignals(self):
         self._view.ui.siteactivecheckBox.stateChanged.connect(self.updateanimalcomboBox)
         self._view.ui.animalcomboBox.currentIndexChanged.connect(self.update_siteComboBox)
@@ -811,6 +830,7 @@ class LaminarCtrl():
         self._view.ui.assignButton.clicked.connect(self.assign_database)
         self._view.ui.figsavepushButton.clicked.connect(self.savecurrentfig)
         self._view.ui.themecheckBox.toggled.connect(self.changeTheme)
+        self._view.ui.badsitecheckBox.toggled.connect(self.landmarkreset)
 
 def main():
     """Main function."""

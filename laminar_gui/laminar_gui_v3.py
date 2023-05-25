@@ -221,6 +221,10 @@ class Ui_mainWidget(object):
         self.landmarkcomboBox = QtWidgets.QComboBox(self.landmarkgroupBox)
         self.landmarkcomboBox.setObjectName("landmarkcomboBox")
         self.verticalLayout_6.addWidget(self.landmarkcomboBox)
+        self.badsitecheckBox = QtWidgets.QCheckBox(self.landmarkgroupBox)
+        self.badsitecheckBox.setChecked(False)
+        self.badsitecheckBox.setObjectName("badsitecheckBox")
+        self.verticalLayout_6.addWidget(self.badsitecheckBox)
         self.arealabel = QtWidgets.QLabel(self.landmarkgroupBox)
         self.arealabel.setObjectName("arealabel")
         self.verticalLayout_6.addWidget(self.arealabel)
@@ -295,6 +299,7 @@ class Ui_mainWidget(object):
         self.themecheckBox = QtWidgets.QCheckBox(self.themegroupBox)
         self.themecheckBox.setObjectName("themecheckBox")
         self.themeverticalLayout.addWidget(self.themecheckBox)
+        self.themecheckBox.setChecked(True)
 
         self.plotsettingstabWidget.addTab(self.Settings, "")
         self.gridLayout.addWidget(self.plotsettingstabWidget, 0, 3, 3, 2)
@@ -381,6 +386,7 @@ class Ui_mainWidget(object):
         self.figsavelabel.setText(_translate("mainWidget", "Path"))
         self.themegroupBox.setTitle(_translate("mainWidget", "Theme"))
         self.themecheckBox.setText(_translate("mainWidget", "Greg mode"))
+        self.badsitecheckBox.setText(_translate("mainWidget", 'No identifiable landmarks \n("NA")'))
 
 if __name__ == "__main__":
     import sys
