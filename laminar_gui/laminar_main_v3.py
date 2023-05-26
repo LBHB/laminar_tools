@@ -1,6 +1,7 @@
 import sys
 import warnings
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 matplotlib.use('Qt5Agg')
@@ -20,6 +21,7 @@ from pathlib import Path
 import json
 from scipy.interpolate import interp1d
 from nems_lbhb import baphy_io as io
+import datetime as dt
 
 class LaminarUi(QWidget):
     def __init__(self, *args, **kwargs):
@@ -279,9 +281,11 @@ class LaminarModel():
             cbar = canvas.fig.colorbar(im, cax=canvas.cax)
             y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
+            canvas.ax.set_xticks(y_ticks)
             if self.probe == 'NPX':
                 y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
                 canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+                canvas.ax.set_xticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
         elif site_erp:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_ERP.pdf")
             for i in range(len(self.erp[:, 0])):
@@ -533,6 +537,70 @@ class LaminarModel():
         # sql = "SELECT * from sCellFile WHERE cellid='CLT007a-002-1'"
         # sql = "SELECT * from gSingleCell WHERE cellid='CLT007a-002-1'"
 
+    def celldb_save_plots(self):
+        sql = f"SELECT pendate from gPenetration where penname='{self.siteid}'"
+        d = db.pd_query(sql)
+        year = d['pendate'][0][:4]
+        animalid = self._view.ui.animalcomboBox.currentText().lower()
+        parmfile = self.parmfile[:-2]
+        fig_loc = f"/auto/data/web/celldb/analysis/{animalid}/{year}/{parmfile}.lfp_depth_markers.jpg"
+        f, ax = plt.subplots(1,3, figsize=(15, 5), layout='tight')
+        im = ax[0].imshow(self.psd_norm, origin='lower', aspect='auto', clim=[0, self.cmax])
+        ax[0].set_xlim(self.freqs[0], self.freqs[-1])
+        ax[0].set_xlabel("frequency")
+        # f.colorbar(im, cax=ax[0].cax)
+        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        ax[0].set_yticks(y_ticks)
+        if self.probe == 'NPX':
+            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+            ax[0].set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+
+        im2 = ax[1].imshow(self.csd, origin='lower', aspect='auto')
+        x_ticks = np.linspace(0, len(self.csd[0, :]), 5)
+        x_ticklabels = np.round(np.linspace(-self.window, self.window, 5), decimals=2)
+        ax[1].set_xticks(x_ticks)
+        ax[1].set_xticklabels(x_ticklabels)
+        ax[1].set_xlabel("time (s)")
+        # cbar = canvas.fig.colorbar(im, cax=canvas.cax, ticks=[self.csd[1:-1, :].max(), self.csd[1:-1, :].min()])
+        # cbar.ax.set_yticklabels(['source', 'sink'])
+        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        ax[1].set_yticks(y_ticks)
+        if self.probe == 'NPX':
+            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+            ax[1].set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+        idx1 = np.where(self.freqs > 1)[0][0]
+        idx15 = np.where(self.freqs < 15)[0][-1]
+        gamma_cohmat = np.squeeze(self.coh.mean(axis=0))
+        im3 = ax[2].imshow(gamma_cohmat, origin='lower', aspect='auto')
+        # cbar = canvas.fig.colorbar(im, cax=canvas.cax)
+        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        ax[2].set_yticks(y_ticks)
+        ax[2].set_xticks(y_ticks)
+        if self.probe == 'NPX':
+            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+            ax[2].set_yticklabels(
+                ["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+            ax[2].set_xticklabels(
+                ["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+
+        # draw some lines
+        for sName in self.landmarks:
+            try:
+                sBool = self.landmarkBoolean[sName]
+                sPos = self.landmarkPosition[sName]
+                if sBool:
+                    top, bottom = sName.split('/')
+                    self.linedict[sName] = [ax[0].axhline(sPos, color='red', linewidth=2, picker=5),
+                                            ax[0].text(0, sPos + 0.5, top, color='orange', fontsize=10),
+                                            ax[0].text(0, sPos - 2, bottom, color='orange', fontsize=10), ax[1].axhline(sPos, color='red', linewidth=2, picker=5),
+                                            ax[1].text(0, sPos + 0.5, top, color='orange', fontsize=10),
+                                            ax[1].text(0, sPos - 2, bottom, color='orange', fontsize=10), ax[2].axhline(sPos, color='red', linewidth=2, picker=5),
+                                            ax[2].text(0, sPos + 0.5, top, color='orange', fontsize=10),
+                                            ax[2].text(0, sPos - 2, bottom, color='orange', fontsize=10)]
+            except:
+                continue
+        f.savefig(fig_loc)
+
 class LaminarCtrl():
     def __init__(self, model, view):
         self._view = view
@@ -581,6 +649,7 @@ class LaminarCtrl():
             except:
                 print("Spike info not found. Still needs to be sorted?")
         self.update_siteList(self._view.ui.sitecomboBox.currentIndex())
+        self._model.celldb_save_plots()
 
     def changeTheme(self):
         if self._view.ui.themecheckBox.isChecked():
