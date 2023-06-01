@@ -13,7 +13,7 @@ from mplwidget import MplWidget
 class Ui_mainWidget(object):
     def setupUi(self, mainWidget):
         self.layerBorders = {'BS/1': -800, '3/4': 0, '4/5':200,
-                             '6/6d': 800, '5d/4d': 1600, '4d/3d': 1800, '3d/Bd': 2600,
+                             '6/6d': 800, '5d/4d': 1600, '4d/3d': 1800, '1d/Bd': 2600,
                              '6/WM':800, 'WM/HC':2700}
         mainWidget.setObjectName("mainWidget")
         mainWidget.resize(1150, 600)

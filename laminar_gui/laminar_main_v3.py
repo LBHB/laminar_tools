@@ -37,7 +37,7 @@ class LaminarModel():
         self.load_template()
         self.template_landmarks = list(self._view.ui.layerBorders.keys())
         self.template_landmarkPosition = {'BS/1': 28, '3/4': 18, '4/5': 12,
-                                          '6/6d': 5, '5d/4d': 4, '4d/3d': 2, '3d/Bd': 0,
+                                          '6/6d': 5, '5d/4d': 4, '4d/3d': 2, '1d/Bd': 0,
                                           '6/WM': 5, 'WM/HC': 0}
         self.template_lines = {}
         self.landmarks = self.template_landmarks
@@ -504,6 +504,117 @@ class LaminarModel():
         complete_dict['site area deep'] = site_area_deep
         self.depth_mapped = {**complete_dict, **position_memory}
 
+    def depth_mapping_from_pixel_value(self):
+        print('mapping to nominal depths')
+        # take padding into consideration if matched to template
+
+        try:
+            lower_pad_size = self.padding[0]
+        except:
+            lower_pad_size = 0
+
+        temp_landmark_dict = {k: v - lower_pad_size for (k, v) in self.landmarkPosition.items()}
+
+        # Marker memory
+        position_memory = {'landmarkBoolean': self.landmarkBoolean, 'landmarkPosition': temp_landmark_dict}
+
+        # hard coded depths based on average cortical thickness of 1.5mm and use in prior literature
+        # BS1_depth = -800
+        # L34_depth = 0
+        # L45_depth = 200
+        # L6WM_depth = 800
+
+        site_area = self._view.ui.areatext.toPlainText()
+        if site_area == '':
+            raise ValueError('Please input a site: A1, PEG')
+        site_area_deep = self._view.ui.areatextdeep.toPlainText()
+        active_landmarks = [k for (k, v) in self.landmarkBoolean.items() if v == True]
+        # convert channels into plot pixels - divide actual depth by column channel spacing
+        column_distances = [int(v[1]) for (k,v) in self.column_xy.items()]
+        column_diffs = [column_distances[i+1]-column_distances[i] for i in range(len(column_distances)-1)]
+        # take most common difference - might run into issues if the electrode pattern is really odd
+        column_spacing = max(set(column_diffs), key=column_diffs.count)
+        active_positions_pixels = [temp_landmark_dict[lm] for lm in active_landmarks]
+        active_positions = [int(self.column_xy[self.column_keys[int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
+        active_assignments = [self._view.ui.layerBorders[lm] for lm in active_landmarks]
+
+        if (len(active_landmarks) < 2) and (self._view.ui.badsitecheckBox.isChecked() == False):
+            raise ValueError("Need more than 1 landmark...")
+        # sort all channels based on depth - for each channel find closest landmark. If landmark is higher up, then check and see if there is landmark one index lower.
+        # If there is a landmark one index lower, create an interp1d mapping between the two landmarks and their assignments. Remap the channel with
+        #  with the name being a split of the upper/lower landmark. If there is not a lower index. take the landmark index one higher than closest landmark.
+        #  Create an interp1d mapping between the two. Remap the channel with the name being the lower label of the landmark above. In the case of the closest landmark
+        # being below the channel. Check and see if there is landmark above the nearest landmark. If there is, interp1d, remap, and name as a split of the two landmarks.
+        # if there is not a landmark above the closest landmark. Find the landmark below the closest landmark to the channel. Interp1d, remap, and name as the upper
+        # label of the closest landmark.
+
+        # ToDo prevent an abundance of names in the DB, require the channel name to be an existing split of all nearest landmarks.
+        # do not allow a landmark to be skipped. BS/1 and 3/4 must be in order. Can not jump directly from BS/1 to 4/5
+        # which would suggest no active 3/4 boundary. Forces user to guess if boundary is not apparent.
+
+        channel_dict = {}
+        for ch in list(self.channel_xy.keys()):
+            # get channel position in pixels
+            channel_position = int(self.channel_xy[ch][1])/column_spacing
+            # find
+            try:
+                min_index = abs(np.array(active_positions_pixels) - channel_position).argmin()
+                upper_values = sorted([val + channel_position for val in np.array(active_positions_pixels) - channel_position if val >= 0])
+                lower_values = sorted([val + channel_position for val in np.array(active_positions_pixels) - channel_position if val < 0])
+            except:
+                pass
+            if self._view.ui.badsitecheckBox.isChecked():
+                electrode_depth = 'NA'
+                location_label = electrode_depth
+
+            elif lower_values and upper_values:
+                lower_landmark = active_landmarks[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                upper_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_position = active_positions[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                upper_position = active_positions[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_assignment = active_assignments[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                upper_assignment = active_assignments[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_top, lower_bottom = lower_landmark.split('/')
+                upper_top, upper_bottom = upper_landmark.split('/')
+                location_label = ''.join([upper_bottom, lower_top])
+
+            elif lower_values and not upper_values:
+                lower_landmark = active_landmarks[np.where(active_positions_pixels == lower_values[-2])[0][0]]
+                upper_landmark = active_landmarks[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                lower_position = active_positions[np.where(active_positions_pixels == lower_values[-2])[0][0]]
+                upper_position = active_positions[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                lower_assignment = active_assignments[np.where(active_positions_pixels == lower_values[-2])[0][0]]
+                upper_assignment = active_assignments[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                lower_top, lower_bottom = lower_landmark.split('/')
+                upper_top, upper_bottom = upper_landmark.split('/')
+                location_label = upper_top
+
+            elif upper_values and not lower_values:
+                lower_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[1])[0][0]]
+                upper_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_position = active_positions[np.where(active_positions_pixels == upper_values[1])[0][0]]
+                upper_position = active_positions[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_assignment = active_assignments[np.where(active_positions_pixels == upper_values[1])[0][0]]
+                upper_assignment = active_assignments[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_top, lower_bottom = lower_landmark.split('/')
+                upper_top, upper_bottom = upper_landmark.split('/')
+                location_label = lower_bottom
+
+            try:
+                y_in = np.array([upper_position, lower_position])
+                y_out = np.array([upper_assignment, lower_assignment])
+                f = interp1d(y_in, y_out, fill_value='extrapolate')
+                channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
+            except:
+                channel_dict[ch] = [location_label, location_label, channel_position]
+        complete_dict = {}
+        complete_dict['channel info'] = channel_dict
+        complete_dict['parmfile'] = self.parmfile
+        complete_dict['site area'] = site_area
+        complete_dict['site area deep'] = site_area_deep
+        self.depth_mapped = {**complete_dict, **position_memory}
+
+
     def load_depth_from_db(self):
         # load from database
         sql = f"SELECT * FROM gDataRaw WHERE id={int(self.rawid)}"
@@ -628,7 +739,7 @@ class LaminarCtrl():
             pass
 
     def assign_database(self):
-        self._model.depth_mapping_new()
+        self._model.depth_mapping_from_pixel_value()
         self._model.depth_mapped
         site_info = self._view.ui.siteList.selectedItems()
         if site_info:
@@ -774,9 +885,13 @@ class LaminarCtrl():
             # load saved depth data
             self._model.load_depth_from_db()
             # reassign gui settings - checkboxes and text
-            for landmark, landbool in self._model.landmarkBoolean.items():
+            for landmark, landbool in list(self._model.landmarkBoolean.items()):
                 if landbool:
-                    self._view.ui.layerCheckBoxes[landmark].setChecked(landbool)
+                    try:
+                        self._view.ui.layerCheckBoxes[landmark].setChecked(landbool)
+                    except:
+                        print("change in gui landmarks from what is in database - leaving blank")
+                        del self._model.landmarkBoolean[landmark]
             self._view.ui.areatext.setText(self._model.area)
             self._view.ui.areatextdeep.setText(self._model.area_deep)
         self.normalization()
