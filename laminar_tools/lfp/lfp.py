@@ -9,8 +9,6 @@ from laminar_tools.probe_specific.probe64d import column_split
 from laminar_tools.csd.csd import csd1d
 from joblib import Memory
 import os
-
-
 import getpass
 linux_user = getpass.getuser()
 
@@ -127,6 +125,7 @@ def parmfile_event_lfp(parmfile):
         physical_channel_num = rec['raw'].chans
         physical_channel_int = [int(ch) for ch in physical_channel_num]
         column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
+        col_sort_dict = {k: column_xy[k] for k in column_xy_sorted}
         sorted_physical_index = [physical_channel_num.index(ch) for ch in column_xy_sorted]
         column_nums_sorted = [int(ch) for ch in column_xy_sorted]
         left_lfp = np.take(lfp_, sorted_physical_index, axis=0)
@@ -134,8 +133,10 @@ def parmfile_event_lfp(parmfile):
         # deal with discontinuity...fill missing channels with nans
         #find indexes where channels are discontinous
         try:
-            diffs = [[bool((y - x) == 1) for x, y in zip(physical_channel_int, physical_channel_int[1:])].index(False)]
-            column_diffs = [[(y-x) == 4 for x,y in zip(column_nums_sorted, column_nums_sorted[1:])].index(False)]
+            # diffs = [[bool((y - x) == 1) for x, y in zip(physical_channel_int, physical_channel_int[1:])].index(False)]
+            column_diffs = [i for i,x in enumerate([(y-x) == 4 for x,y in zip(column_nums_sorted, column_nums_sorted[1:])]) if x == False]
+
+
         except:
             print("all channels are contiguous with one another")
             column_diffs = False
@@ -150,7 +151,7 @@ def parmfile_event_lfp(parmfile):
                 for i in range(len(gap_chans)):
                     column_xy[str(gap_chans[i])] = ['11', gap_chans_y[i]]
                     channel_xy_gap_filled[str(gap_chans[i])] = ['11', gap_chans_y[i]]
-                column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy_gap_filled[k][1]))
+                column_xy_sorted = sorted(column_xy, key=lambda k: int(column_xy[k][1]))
                 left_lfp_gap = np.empty((len(gap_chans), len(left_lfp[0, :])))
                 left_events_gap = np.empty((len(left_lfp_events[:, 0, 0]), len(gap_chans), len(left_lfp_events[0, 0, :])))
                 left_lfp_gap[:] = np.nan
@@ -163,6 +164,8 @@ def parmfile_event_lfp(parmfile):
                 for i in range(len(left_lfp_events[:, 0, 0])):
                     # left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=True, nan_axis=0)
                     left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 17, contains_nan=True, nan_axis=0)
+
+
         else:
             # calculate csd for each trial
             left_csd = np.zeros_like(left_lfp_events[:, :, :])
