@@ -1,6 +1,7 @@
 import sys
 import warnings
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 matplotlib.use('Qt5Agg')
@@ -8,6 +9,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import matplotlib.lines as lines
 from PyQt5.QtWidgets import QApplication, QWidget, QTreeWidgetItem
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPalette, QColor
 from nems0 import db
 from nems_lbhb.baphy_experiment import BAPHYExperiment
 from laminar_tools.lfp.lfp import parmfile_event_lfp
@@ -18,6 +21,7 @@ from pathlib import Path
 import json
 from scipy.interpolate import interp1d
 from nems_lbhb import baphy_io as io
+import datetime as dt
 
 class LaminarUi(QWidget):
     def __init__(self, *args, **kwargs):
@@ -32,7 +36,9 @@ class LaminarModel():
         self._view = view
         self.load_template()
         self.template_landmarks = list(self._view.ui.layerBorders.keys())
-        self.template_landmarkPosition = {'BS/1': 28, '3/4': 18, '4/5': 12, '6/WM': 5, 'WM/HC': 0}
+        self.template_landmarkPosition = {'BS/1': 28, '3/4': 18, '4/5': 12,
+                                          '6/6d': 5, '5d/4d': 4, '4d/3d': 2, '1d/Bd': 0,
+                                          '6/WM': 5, 'WM/HC': 0}
         self.template_lines = {}
         self.landmarks = self.template_landmarks
         self.landmarkPosition = {border: self.template_landmarkPosition[border] for border in self.landmarks}
@@ -95,6 +101,7 @@ class LaminarModel():
         self.template_csd = template_csd
 
     def site_csd_psd(self, parmfile, align=True):
+        self.load_template()
         csd, psd, freqs, stim_window, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, erp, probe = parmfile_event_lfp(parmfile)
         max_power = np.nanmax(psd, axis=0)
         if align:
@@ -105,11 +112,13 @@ class LaminarModel():
             ssim_index_list = [ssim_index, ]
             self.ssim = ssim
             self.ssim_index = ssim_index
-            nan_pad_psd, nan_pad_csd, padding = pad_to_template(self.template_psd, psd, csd, ssim_index_list, already_padded=True)
+            nan_pad_psd, nan_pad_csd, padding, template, template_csd = pad_to_template(self.template_psd, self.template_csd, psd, csd, ssim_index_list, already_padded=True)
+            self.template_psd = template
+            self.template_csd = template_csd
             self.padding = padding
-            upper_pad = np.empty((len(coh_mat[:, 0, 0]), padding[1], len(coh_mat[0,:])))
+            upper_pad = np.empty((len(coh_mat[:, 0, 0]), int(padding[1]), len(coh_mat[0,:])))
             upper_pad[:] = np.nan
-            lower_pad = np.empty((len(coh_mat[:, 0, 0]), padding[0], len(coh_mat[0,:])))
+            lower_pad = np.empty((len(coh_mat[:, 0, 0]), int(padding[0]), len(coh_mat[0,:])))
             lower_pad[:] = np.nan
             coh_mat = np.concatenate((lower_pad, coh_mat, upper_pad), axis=1)
             psd = np.squeeze(nan_pad_psd)
@@ -209,7 +218,7 @@ class LaminarModel():
         print('plotting laminar data...')
         self.clear_canvas(canvas)
         if self._view.ui.localnormradioButton.isChecked():
-            self.cmax = self.template_psd_norm.max()
+            self.cmax = np.nanmax(self.template_psd_norm)
         if temp_psd:
             im = canvas.ax.imshow(self.template_psd_norm, origin='lower', aspect='auto', clim=[0, self.cmax])
             canvas.ax.set_xlim(self.freqs[0], self.freqs[-1])
@@ -272,9 +281,11 @@ class LaminarModel():
             cbar = canvas.fig.colorbar(im, cax=canvas.cax)
             y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
+            canvas.ax.set_xticks(y_ticks)
             if self.probe == 'NPX':
                 y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
                 canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+                canvas.ax.set_xticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
         elif site_erp:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_ERP.pdf")
             for i in range(len(self.erp[:, 0])):
@@ -282,6 +293,7 @@ class LaminarModel():
         canvas.ax.set_ylabel("channels")
         canvas.ax.set_title(str(self.parmfile))
         self.draw_lines(canvas.ax)
+
 
     def clear_canvas(self, canvas):
         canvas.ax.clear()
@@ -403,11 +415,12 @@ class LaminarModel():
         site_area = self._view.ui.areatext.toPlainText()
         if site_area == '':
             raise ValueError('Please input a site: A1, PEG')
+        site_area_deep = self._view.ui.areatextdeep.toPlainText()
         active_landmarks = [k for (k, v) in self.landmarkBoolean.items() if v == True]
         active_positions = [int(self.column_xy[self.column_keys[int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
         active_assignments = [self._view.ui.layerBorders[lm] for lm in active_landmarks]
 
-        if len(active_landmarks) < 2:
+        if (len(active_landmarks) < 2) and (self._view.ui.badsitecheckBox.isChecked() == False):
             raise ValueError("Need more than 1 landmark...")
         # sort all channels based on depth - for each channel find closest landmark. If landmark is higher up, then check and see if there is landmark one index lower.
         # If there is a landmark one index lower, create an interp1d mapping between the two landmarks and their assignments. Remap the channel with
@@ -425,8 +438,16 @@ class LaminarModel():
         for ch in list(self.channel_xy.keys()):
             # find closest active channel
             channel_position = int(self.channel_xy[ch][1])
-            min_index = abs(np.array(active_positions) - channel_position).argmin()
-            if channel_position <= active_positions[min_index]:
+            # This isn't a good solution to the problem (-Jereme and Greg 2023_04_13)
+            try:
+                min_index = abs(np.array(active_positions) - channel_position).argmin()
+            except:
+                pass
+            if self._view.ui.badsitecheckBox.isChecked():
+                electrode_depth = 'NA'
+                location_label = electrode_depth
+
+            elif channel_position <= active_positions[min_index]:
                 try:
                     lower_landmark = active_landmarks[min_index+1]
                     upper_landmark = active_landmarks[min_index]
@@ -469,16 +490,130 @@ class LaminarModel():
                     lower_top, lower_bottom = lower_landmark.split('/')
                     upper_top, upper_bottom = upper_landmark.split('/')
                     location_label = upper_top
-
-            y_in = np.array([upper_position, lower_position])
-            y_out = np.array([upper_assignment, lower_assignment])
-            f = interp1d(y_in, y_out, fill_value='extrapolate')
-            channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
+            try:
+                y_in = np.array([upper_position, lower_position])
+                y_out = np.array([upper_assignment, lower_assignment])
+                f = interp1d(y_in, y_out, fill_value='extrapolate')
+                channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
+            except:
+                channel_dict[ch] = [location_label, location_label, channel_position]
         complete_dict = {}
         complete_dict['channel info'] = channel_dict
         complete_dict['parmfile'] = self.parmfile
         complete_dict['site area'] = site_area
+        complete_dict['site area deep'] = site_area_deep
         self.depth_mapped = {**complete_dict, **position_memory}
+
+    def depth_mapping_from_pixel_value(self):
+        print('mapping to nominal depths')
+        # take padding into consideration if matched to template
+
+        try:
+            lower_pad_size = self.padding[0]
+        except:
+            lower_pad_size = 0
+
+        temp_landmark_dict = {k: v - lower_pad_size for (k, v) in self.landmarkPosition.items()}
+
+        # Marker memory
+        position_memory = {'landmarkBoolean': self.landmarkBoolean, 'landmarkPosition': temp_landmark_dict}
+
+        # hard coded depths based on average cortical thickness of 1.5mm and use in prior literature
+        # BS1_depth = -800
+        # L34_depth = 0
+        # L45_depth = 200
+        # L6WM_depth = 800
+
+        site_area = self._view.ui.areatext.toPlainText()
+        if site_area == '':
+            raise ValueError('Please input a site: A1, PEG')
+        site_area_deep = self._view.ui.areatextdeep.toPlainText()
+        active_landmarks = [k for (k, v) in self.landmarkBoolean.items() if v == True]
+        # convert channels into plot pixels - divide actual depth by column channel spacing
+        column_distances = [int(v[1]) for (k,v) in self.column_xy.items()]
+        column_diffs = [column_distances[i+1]-column_distances[i] for i in range(len(column_distances)-1)]
+        # take most common difference - might run into issues if the electrode pattern is really odd
+        column_spacing = max(set(column_diffs), key=column_diffs.count)
+        active_positions_pixels = [temp_landmark_dict[lm] for lm in active_landmarks]
+        active_positions = [int(self.column_xy[self.column_keys[int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
+        active_assignments = [self._view.ui.layerBorders[lm] for lm in active_landmarks]
+
+        if (len(active_landmarks) < 2) and (self._view.ui.badsitecheckBox.isChecked() == False):
+            raise ValueError("Need more than 1 landmark...")
+        # sort all channels based on depth - for each channel find closest landmark. If landmark is higher up, then check and see if there is landmark one index lower.
+        # If there is a landmark one index lower, create an interp1d mapping between the two landmarks and their assignments. Remap the channel with
+        #  with the name being a split of the upper/lower landmark. If there is not a lower index. take the landmark index one higher than closest landmark.
+        #  Create an interp1d mapping between the two. Remap the channel with the name being the lower label of the landmark above. In the case of the closest landmark
+        # being below the channel. Check and see if there is landmark above the nearest landmark. If there is, interp1d, remap, and name as a split of the two landmarks.
+        # if there is not a landmark above the closest landmark. Find the landmark below the closest landmark to the channel. Interp1d, remap, and name as the upper
+        # label of the closest landmark.
+
+        # ToDo prevent an abundance of names in the DB, require the channel name to be an existing split of all nearest landmarks.
+        # do not allow a landmark to be skipped. BS/1 and 3/4 must be in order. Can not jump directly from BS/1 to 4/5
+        # which would suggest no active 3/4 boundary. Forces user to guess if boundary is not apparent.
+
+        channel_dict = {}
+        for ch in list(self.channel_xy.keys()):
+            # get channel position in pixels
+            channel_position = int(self.channel_xy[ch][1])/column_spacing
+            # find
+            try:
+                min_index = abs(np.array(active_positions_pixels) - channel_position).argmin()
+                upper_values = sorted([val + channel_position for val in np.array(active_positions_pixels) - channel_position if val >= 0])
+                lower_values = sorted([val + channel_position for val in np.array(active_positions_pixels) - channel_position if val < 0])
+            except:
+                pass
+            if self._view.ui.badsitecheckBox.isChecked():
+                electrode_depth = 'NA'
+                location_label = electrode_depth
+
+            elif lower_values and upper_values:
+                lower_landmark = active_landmarks[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                upper_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_position = active_positions[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                upper_position = active_positions[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_assignment = active_assignments[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                upper_assignment = active_assignments[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_top, lower_bottom = lower_landmark.split('/')
+                upper_top, upper_bottom = upper_landmark.split('/')
+                location_label = ''.join([upper_bottom, lower_top])
+
+            elif lower_values and not upper_values:
+                lower_landmark = active_landmarks[np.where(active_positions_pixels == lower_values[-2])[0][0]]
+                upper_landmark = active_landmarks[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                lower_position = active_positions[np.where(active_positions_pixels == lower_values[-2])[0][0]]
+                upper_position = active_positions[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                lower_assignment = active_assignments[np.where(active_positions_pixels == lower_values[-2])[0][0]]
+                upper_assignment = active_assignments[np.where(active_positions_pixels == lower_values[-1])[0][0]]
+                lower_top, lower_bottom = lower_landmark.split('/')
+                upper_top, upper_bottom = upper_landmark.split('/')
+                location_label = upper_top
+
+            elif upper_values and not lower_values:
+                lower_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[1])[0][0]]
+                upper_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_position = active_positions[np.where(active_positions_pixels == upper_values[1])[0][0]]
+                upper_position = active_positions[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_assignment = active_assignments[np.where(active_positions_pixels == upper_values[1])[0][0]]
+                upper_assignment = active_assignments[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_top, lower_bottom = lower_landmark.split('/')
+                upper_top, upper_bottom = upper_landmark.split('/')
+                location_label = lower_bottom
+
+            try:
+                y_in = np.array([upper_position, lower_position])
+                y_out = np.array([upper_assignment, lower_assignment])
+                f = interp1d(y_in, y_out, fill_value='extrapolate')
+                channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
+            except:
+                channel_dict[ch] = [location_label, location_label, channel_position]
+        complete_dict = {}
+        complete_dict['channel info'] = channel_dict
+        complete_dict['parmfile'] = self.parmfile
+        complete_dict['site area'] = site_area
+        complete_dict['site area deep'] = site_area_deep
+        self.depth_mapped = {**complete_dict, **position_memory}
+
 
     def load_depth_from_db(self):
         # load from database
@@ -493,6 +628,12 @@ class LaminarModel():
             for landmark in list(loadedds['landmarkPosition'].keys()):
                 self.landmarkPosition[landmark] = loadedds['landmarkPosition'][landmark]
         self.landmarkBoolean = loadedds['landmarkBoolean']
+        try:
+            self.area = loadedds['site area']
+            self.area_deep = loadedds['site area deep']
+        except:
+            self.area = ''
+            self.area_deep = ''
 
     def load_area_from_db(self):
         sql = f"SELECT * from gCellMaster WHERE cellid='{self.siteid}'"
@@ -507,12 +648,79 @@ class LaminarModel():
         # sql = "SELECT * from sCellFile WHERE cellid='CLT007a-002-1'"
         # sql = "SELECT * from gSingleCell WHERE cellid='CLT007a-002-1'"
 
+    def celldb_save_plots(self):
+        sql = f"SELECT pendate from gPenetration where penname='{self.siteid}'"
+        d = db.pd_query(sql)
+        year = d['pendate'][0][:4]
+        animalid = self._view.ui.animalcomboBox.currentText().lower()
+        parmfile = self.parmfile[:-2]
+        fig_loc = f"/auto/data/web/celldb/analysis/{animalid}/{year}/{parmfile}.lfp_depth_markers.jpg"
+        f, ax = plt.subplots(1,3, figsize=(15, 5), layout='tight')
+        im = ax[0].imshow(self.psd_norm, origin='lower', aspect='auto', clim=[0, self.cmax])
+        ax[0].set_xlim(self.freqs[0], self.freqs[-1])
+        ax[0].set_xlabel("frequency")
+        # f.colorbar(im, cax=ax[0].cax)
+        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        ax[0].set_yticks(y_ticks)
+        if self.probe == 'NPX':
+            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+            ax[0].set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+
+        im2 = ax[1].imshow(self.csd, origin='lower', aspect='auto')
+        x_ticks = np.linspace(0, len(self.csd[0, :]), 5)
+        x_ticklabels = np.round(np.linspace(-self.window, self.window, 5), decimals=2)
+        ax[1].set_xticks(x_ticks)
+        ax[1].set_xticklabels(x_ticklabels)
+        ax[1].set_xlabel("time (s)")
+        # cbar = canvas.fig.colorbar(im, cax=canvas.cax, ticks=[self.csd[1:-1, :].max(), self.csd[1:-1, :].min()])
+        # cbar.ax.set_yticklabels(['source', 'sink'])
+        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        ax[1].set_yticks(y_ticks)
+        if self.probe == 'NPX':
+            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+            ax[1].set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+        idx1 = np.where(self.freqs > 1)[0][0]
+        idx15 = np.where(self.freqs < 15)[0][-1]
+        gamma_cohmat = np.squeeze(self.coh.mean(axis=0))
+        im3 = ax[2].imshow(gamma_cohmat, origin='lower', aspect='auto')
+        # cbar = canvas.fig.colorbar(im, cax=canvas.cax)
+        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        ax[2].set_yticks(y_ticks)
+        ax[2].set_xticks(y_ticks)
+        if self.probe == 'NPX':
+            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+            ax[2].set_yticklabels(
+                ["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+            ax[2].set_xticklabels(
+                ["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+
+        # draw some lines
+        for sName in self.landmarks:
+            try:
+                sBool = self.landmarkBoolean[sName]
+                sPos = self.landmarkPosition[sName]
+                if sBool:
+                    top, bottom = sName.split('/')
+                    self.linedict[sName] = [ax[0].axhline(sPos, color='red', linewidth=2, picker=5),
+                                            ax[0].text(0, sPos + 0.5, top, color='orange', fontsize=10),
+                                            ax[0].text(0, sPos - 2, bottom, color='orange', fontsize=10), ax[1].axhline(sPos, color='red', linewidth=2, picker=5),
+                                            ax[1].text(0, sPos + 0.5, top, color='orange', fontsize=10),
+                                            ax[1].text(0, sPos - 2, bottom, color='orange', fontsize=10), ax[2].axhline(sPos, color='red', linewidth=2, picker=5),
+                                            ax[2].text(0, sPos + 0.5, top, color='orange', fontsize=10),
+                                            ax[2].text(0, sPos - 2, bottom, color='orange', fontsize=10)]
+            except:
+                continue
+        f.savefig(fig_loc)
+
 class LaminarCtrl():
     def __init__(self, model, view):
         self._view = view
         self._model = model
         self.updateanimalcomboBox(active=True)
+        self.update_siteComboBox(index=0)
+        self.update_siteList(index=0)
         self._connectSignals()
+        self.default_palette = self._view.palette()
 
     def savecurrentfig(self):
         if self._view.ui.figsavecheckBox.isChecked():
@@ -531,7 +739,7 @@ class LaminarCtrl():
             pass
 
     def assign_database(self):
-        self._model.depth_mapping_new()
+        self._model.depth_mapping_from_pixel_value()
         self._model.depth_mapped
         site_info = self._view.ui.siteList.selectedItems()
         if site_info:
@@ -552,6 +760,32 @@ class LaminarCtrl():
             except:
                 print("Spike info not found. Still needs to be sorted?")
         self.update_siteList(self._view.ui.sitecomboBox.currentIndex())
+        self._model.celldb_save_plots()
+
+    def changeTheme(self):
+        if self._view.ui.themecheckBox.isChecked():
+            dark_palette = QPalette()
+            dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.WindowText, Qt.white)
+            dark_palette.setColor(QPalette.Base, QColor(35, 35, 35))
+            dark_palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.ToolTipBase, QColor(25, 25, 25))
+            dark_palette.setColor(QPalette.ToolTipText, Qt.white)
+            dark_palette.setColor(QPalette.Text, Qt.white)
+            dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.ButtonText, Qt.white)
+            dark_palette.setColor(QPalette.BrightText, Qt.red)
+            dark_palette.setColor(QPalette.Link, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.HighlightedText, QColor(35, 35, 35))
+            dark_palette.setColor(QPalette.Active, QPalette.Button, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.Disabled, QPalette.ButtonText, Qt.darkGray)
+            dark_palette.setColor(QPalette.Disabled, QPalette.WindowText, Qt.darkGray)
+            dark_palette.setColor(QPalette.Disabled, QPalette.Text, Qt.darkGray)
+            dark_palette.setColor(QPalette.Disabled, QPalette.Light, QColor(53, 53, 53))
+            self._view.setPalette(dark_palette)
+        else:
+            self._view.setPalette(self.default_palette)
 
     def updateanimalcomboBox(self, active):
         self._view.ui.animalcomboBox.clear()
@@ -648,7 +882,18 @@ class LaminarCtrl():
         parmfilepath = [rawpath/animalid/self._model.siteid/self._model.parmfile]
         self._model.site_csd_psd(parmfilepath, align=align)
         if db_available != 'No':
+            # load saved depth data
             self._model.load_depth_from_db()
+            # reassign gui settings - checkboxes and text
+            for landmark, landbool in list(self._model.landmarkBoolean.items()):
+                if landbool:
+                    try:
+                        self._view.ui.layerCheckBoxes[landmark].setChecked(landbool)
+                    except:
+                        print("change in gui landmarks from what is in database - leaving blank")
+                        del self._model.landmarkBoolean[landmark]
+            self._view.ui.areatext.setText(self._model.area)
+            self._view.ui.areatextdeep.setText(self._model.area_deep)
         self.normalization()
         self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
         self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
@@ -656,6 +901,7 @@ class LaminarCtrl():
                               self._view.ui.siteERPradioButton.isChecked())
         self._view.ui.templateCanvas.canvas.draw()
         self._view.ui.siteCanvas.canvas.draw()
+        self.lineconnect()
 
     def update_plots(self):
         template_psd_requested = self._view.ui.tempPSDradioButton.isChecked()
@@ -670,6 +916,7 @@ class LaminarCtrl():
                               self._view.ui.siteERPradioButton.isChecked())
         self._view.ui.templateCanvas.canvas.draw()
         self._view.ui.siteCanvas.canvas.draw()
+        self.lineconnect()
 
     def updatelandmarkcomboBox(self, sepName, checkbox):
         print(f'updating dropdown with {sepName}...')
@@ -737,6 +984,12 @@ class LaminarCtrl():
         self._model.draw_lines(self._view.ui.siteCanvas.canvas.ax)
         self.lineconnect()
 
+    def landmarkreset(self):
+        self._model.landmarkBoolean = {key:False for key in self._model.landmarkBoolean.keys()}
+        for boxName, checkBox in self._view.ui.layerCheckBoxes.items():
+            checkBox.setChecked(False)
+        self.update_plots()
+
     def _connectSignals(self):
         self._view.ui.siteactivecheckBox.stateChanged.connect(self.updateanimalcomboBox)
         self._view.ui.animalcomboBox.currentIndexChanged.connect(self.update_siteComboBox)
@@ -760,6 +1013,8 @@ class LaminarCtrl():
         self._view.ui.templatelandmarkcheckBox.toggled.connect(self.template_lines)
         self._view.ui.assignButton.clicked.connect(self.assign_database)
         self._view.ui.figsavepushButton.clicked.connect(self.savecurrentfig)
+        self._view.ui.themecheckBox.toggled.connect(self.changeTheme)
+        self._view.ui.badsitecheckBox.toggled.connect(self.landmarkreset)
 
 def main():
     """Main function."""
