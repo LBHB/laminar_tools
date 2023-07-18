@@ -559,8 +559,8 @@ class LaminarModel():
             # find
             try:
                 min_index = abs(np.array(active_positions_pixels) - channel_position).argmin()
-                upper_values = sorted([val + channel_position for val in np.array(active_positions_pixels) - channel_position if val >= 0])
-                lower_values = sorted([val + channel_position for val in np.array(active_positions_pixels) - channel_position if val < 0])
+                upper_values = sorted([val for val in np.array(active_positions_pixels) if val-channel_position >= 0])
+                lower_values = sorted([val for val in np.array(active_positions_pixels) if val-channel_position < 0])
             except:
                 pass
             if self._view.ui.badsitecheckBox.isChecked():
