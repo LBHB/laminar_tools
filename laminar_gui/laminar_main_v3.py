@@ -12,8 +12,9 @@ from PyQt5.QtWidgets import QApplication, QWidget, QTreeWidgetItem
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor
 from nems0 import db
-from nems_lbhb.baphy_experiment import BAPHYExperiment
+from nems_lbhb.baphy_io import probe_finder, npx_channel_map_finder
 from laminar_tools.lfp.lfp import parmfile_event_lfp
+from laminar_tools.mua.mua import parmfile_mua_FTC
 from laminar_tools.laminar_analysis.laminar_analysis import maximal_laminar_similarity, pad_to_template
 from laminar_gui_v3 import Ui_mainWidget
 from functools import partial
@@ -22,6 +23,7 @@ import json
 from scipy.interpolate import interp1d
 from nems_lbhb import baphy_io as io
 import datetime as dt
+import  re
 
 class LaminarUi(QWidget):
     def __init__(self, *args, **kwargs):
@@ -49,6 +51,14 @@ class LaminarModel():
         self.template_lines = {}
         self.depth_mapped = {}
         self.figpathroot = "/auto/users/wingertj"
+        self.raw_data_path = Path('/auto/data/daq')
+        self.loadedds = {}
+
+    def update_default_landmarkPositions(self):
+        self.landmarkPosition = {}
+        self.landmarkBoolean = {border: False for border in self.landmarks}
+        for probe in self.probe:
+            self.landmarkPosition[probe] = {border: self.template_landmarkPosition[border] for border in self.landmarks}
 
     def animals(self, active):
         # get animals:
@@ -90,7 +100,81 @@ class LaminarModel():
         self.rawids = dRawFiles['id'].to_list()
 
         # check if channel mapping in database
-        self.dbcheck = ['Yes' if i is not None else 'No' for i in dRawFiles['depthinfo']]
+        # self.dbcheck = ['Yes' if i is not None else 'No' for i in dRawFiles['depthinfo']]
+        substring = 'Probe'
+        pattern = re.compile(f'{re.escape(substring)}([A-Za-z])')
+        try:
+            self.dbcheck = [', '.join(pattern.findall(di)) if di is not None else 'No' for di in dRawFiles['depthinfo']]
+        except:
+            self.dbcheck = ['Yes' if i is not None else 'No' for i in dRawFiles['depthinfo']]
+
+    def site_probe_check(self):
+        # find open-ephys folder for each parmfile
+        site_probe_list = []
+        site_probe_type = []
+        for parmfile in self.parmfilelist:
+            try:
+                animalid = self._view.ui.animalcomboBox.currentText()
+                siteid = self._view.ui.sitecomboBox.currentText()
+                try:
+                    data_path = self.raw_data_path/animalid/siteid/'raw'/parmfile[:9]
+                    OE_experiments = [x for x in data_path.iterdir() if x.is_dir()]
+                except:
+                    data_path = self.raw_data_path/animalid/siteid/parmfile/'raw'
+                    OE_experiments = [x for x in data_path.iterdir() if x.is_dir()]
+                experiment_probe_list = []
+                experiment_probe_type = []
+                for OE_folder in OE_experiments:
+                    probes, probe_type = probe_finder(OE_folder)
+                    experiment_probe_list.append(probes)
+                    experiment_probe_type.append(probe_type)
+                # Quick check to make sure all probes match across an experiment - they should. If not raise an error.
+                if len(set([len(prb_list) for prb_list in experiment_probe_list]))== 1:
+                    prb_name_check = [all([experiment_probe_list[0][i] in experiment_probe_list[j] for j in range(len(experiment_probe_list))]) for i in range(len(experiment_probe_list[0]))]
+                    if all(prb_name_check):
+                        parmfile_probes = [prb_letter[-1:] for prb_letter in experiment_probe_list[0]]
+                    else:
+                        raise ValueError("Probes in each experiment do not match. Which experiment should be used?")
+                else:
+                    raise ValueError("Probes in each experiment do not match. Which experiment should be used?")
+
+                site_probe_list.append(parmfile_probes)
+                site_probe_type.append(experiment_probe_type[0])
+            except:
+                print(f"Unable to find raw data path for {parmfile}...unexpected data path?")
+
+        return site_probe_list, site_probe_type
+
+    def BNB_FTC_channel_match(self, FTC_parmfile, BNB_parmfile):
+
+        # FTC channel map
+        try:
+            data_path = FTC_parmfile
+            OE_experiments = [x for x in data_path.iterdir() if x.is_dir()]
+        except:
+            data_path = FTC_parmfile
+            OE_experiments = [x for x in data_path.iterdir() if x.is_dir()]
+        FTC_channel_list = []
+        for OE_folder in OE_experiments:
+            FTC_channel_list.append(npx_channel_map_finder(OE_folder))
+
+        # BNB channel map
+        try:
+            data_path = BNB_parmfile
+            OE_experiments = [x for x in data_path.iterdir() if x.is_dir()]
+        except:
+            data_path = BNB_parmfile
+            OE_experiments = [x for x in data_path.iterdir() if x.is_dir()]
+        BNB_channel_list = []
+        for OE_folder in OE_experiments:
+            BNB_channel_list.append(npx_channel_map_finder(OE_folder))
+
+        # use the first experiment in the lists because channel maps shouldn't change between experiments within same recording
+        FTC_channels = FTC_channel_list[0]
+        BNB_channels = BNB_channel_list[0]
+
+        return FTC_channels == BNB_channels
+
 
     def load_template(self):
         template_psd = np.load("/auto/users/wingertj/code/csd_project/data/laminar_features/template/final_psd_template_v2.npy")
@@ -102,8 +186,8 @@ class LaminarModel():
 
     def site_csd_psd(self, parmfile, align=True):
         self.load_template()
-        csd, psd, freqs, stim_window, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, erp, probe = parmfile_event_lfp(parmfile)
-        max_power = np.nanmax(psd, axis=0)
+        csd, psd, freqs, stim_window, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, probe, probe_type = parmfile_event_lfp(parmfile)
+        max_power = [np.nanmax(psd[i], axis=0) for i in range(len(psd))]
         if align:
             averaged_template, ssim_index, ssim = maximal_laminar_similarity(template=self.template_psd, image=psd, overlap=10,
                                                                              ssim_window=5, expansion=True)
@@ -124,7 +208,7 @@ class LaminarModel():
             psd = np.squeeze(nan_pad_psd)
             csd = np.squeeze(nan_pad_csd)
 
-        self.erp = erp
+        # self.erp = erp
         self.coh = coh_mat
         self.freqs = freqs
         self.rasterfs = rasterfs
@@ -137,6 +221,12 @@ class LaminarModel():
         self.column_keys = column_xy_sorted
         self.channel_xy = channel_xy
         self.probe = probe
+        self.current_probe_index = [index for index, probe_id in enumerate(self.probe) if self.current_probe == probe_id[-1:]][0]
+        self.probe_type = probe_type
+
+    def FTC_mua_heatmap(self, parmfile):
+        pass
+
 
     def no_normalization(self):
         self.psd_norm = self.psd
@@ -151,9 +241,9 @@ class LaminarModel():
         self.cmax = max([self.template_psd_norm.max(), self.unpadded_psd_norm.max()])
 
     def local_normalization(self):
-        self.psd_norm = self.psd/self.site_max_power
+        self.psd_norm = [self.psd[i]/self.site_max_power[i] for i in range(len(self.psd))]
         self.template_psd_norm = self.template_psd/self.temp_max_power
-        self.unpadded_psd_norm = self.psd_norm[~np.isnan(self.psd_norm)]
+        self.unpadded_psd_norm = [self.psd_norm[i][~np.isnan(self.psd_norm[i])] for i in range(len(self.psd_norm))]
 
     def temp_normalization(self):
         self.psd_norm = self.psd/self.temp_max_power
@@ -171,11 +261,17 @@ class LaminarModel():
         print('done')
 
     def reset_line(self, canvas, line):
-        self.landmarkPosition[line] = self.template_landmarkPosition[line]
+        if self.probe[self.current_probe_index] in list(self.loadedds.keys()):
+            self.landmarkPosition[line] = self.loadedds[self.probe[self.current_probe_index]]['landmarkPosition'][line]
+        else:
+            self.landmarkPosition[line] = self.template_landmarkPosition[line]
         self.draw_lines(canvas.ax)
 
     def reset_lines(self, canvas):
-        self.landmarkPosition = {border: self.template_landmarkPosition[border] for border in self.landmarks}
+        if self.probe[self.current_probe_index] in list(self.loadedds.keys()):
+            self.load_depth_from_db()
+        else:
+            self.landmarkPosition = {border: self.template_landmarkPosition[border] for border in self.landmarks}
         self.draw_lines(canvas.ax)
 
     def draw_lines(self, ax):
@@ -221,7 +317,7 @@ class LaminarModel():
             self.cmax = np.nanmax(self.template_psd_norm)
         if temp_psd:
             im = canvas.ax.imshow(self.template_psd_norm, origin='lower', aspect='auto', clim=[0, self.cmax])
-            canvas.ax.set_xlim(self.freqs[0], self.freqs[-1])
+            canvas.ax.set_xlim(self.freqs[0][0], self.freqs[0][-1])
             canvas.ax.set_xlabel("frequency")
             canvas.fig.colorbar(im, cax=canvas.cax)
         else:
@@ -234,62 +330,62 @@ class LaminarModel():
             canvas.ax.set_xlabel("time (s)")
         self.template_draw_lines(canvas.ax)
 
-    def site_plot(self, canvas, site_psd, site_csd, site_coh, site_erp):
+    def site_plot(self, canvas, site_psd, site_csd, site_coh):
         """
         plots the laminar data
         """
         print('plotting laminar data...')
         self.clear_canvas(canvas)
         if self._view.ui.localnormradioButton.isChecked():
-            self.cmax = self.unpadded_psd_norm.max()
+            self.cmax = self.unpadded_psd_norm[self.current_probe_index].max()
         if site_psd:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_PSD.pdf")
-            im = canvas.ax.imshow(self.psd_norm, origin='lower', aspect='auto', clim=[0, self.cmax])
-            canvas.ax.set_xlim(self.freqs[0], self.freqs[-1])
+            im = canvas.ax.imshow(self.psd_norm[self.current_probe_index], origin='lower', aspect='auto', clim=[0, self.cmax])
+            canvas.ax.set_xlim(self.freqs[self.current_probe_index][0], self.freqs[self.current_probe_index][-1])
             canvas.ax.set_xlabel("frequency")
             canvas.fig.colorbar(im, cax=canvas.cax)
-            y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+            y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
-            if self.probe == 'NPX':
-                y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+            if self.probe_type == 'NPX':
+                y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
+                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
 
         elif site_csd:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_CSD.pdf")
-            im = canvas.ax.imshow(self.csd, origin='lower', aspect='auto')
-            x_ticks = np.linspace(0, len(self.csd[0, :]), 5)
+            im = canvas.ax.imshow(self.csd[self.current_probe_index], origin='lower', aspect='auto')
+            x_ticks = np.linspace(0, len(self.csd[self.current_probe_index][0, :]), 5)
             x_ticklabels = np.round(np.linspace(-self.window, self.window, 5), decimals=2)
             canvas.ax.set_xticks(x_ticks)
             canvas.ax.set_xticklabels(x_ticklabels)
             canvas.ax.set_xlabel("time (s)")
-            cbar = canvas.fig.colorbar(im, cax=canvas.cax, ticks=[self.csd[1:-1, :].max(), self.csd[1:-1, :].min()])
+            cbar = canvas.fig.colorbar(im, cax=canvas.cax, ticks=[self.csd[self.current_probe_index][1:-1, :].max(), self.csd[self.current_probe_index][1:-1, :].min()])
             cbar.ax.set_yticklabels(['source', 'sink'])
-            y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+            y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
-            if self.probe == 'NPX':
-                y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+            if self.probe_type == 'NPX':
+                y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
+                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
 
         elif site_coh:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_COH.pdf")
             # idx30 = np.where(self.freqs > 30)[0][0]
             # idx150 = np.where(self.freqs < 150)[0][-1]
-            idx1 = np.where(self.freqs > 1)[0][0]
-            idx15 = np.where(self.freqs < 15)[0][-1]
-            gamma_cohmat = np.squeeze(self.coh.mean(axis=0))
+            idx1 = np.where(self.freqs[self.current_probe_index] > 1)[0][0]
+            idx15 = np.where(self.freqs[self.current_probe_index] < 15)[0][-1]
+            gamma_cohmat = np.squeeze(self.coh[self.current_probe_index].mean(axis=0))
             im = canvas.ax.imshow(gamma_cohmat, origin='lower', aspect='auto')
             cbar = canvas.fig.colorbar(im, cax=canvas.cax)
-            y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+            y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
             canvas.ax.set_yticks(y_ticks)
             canvas.ax.set_xticks(y_ticks)
-            if self.probe == 'NPX':
-                y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
-                canvas.ax.set_xticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
-        elif site_erp:
-            self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_ERP.pdf")
-            for i in range(len(self.erp[:, 0])):
-                canvas.ax.plot((self.erp[i, :] + 500*i))
+            if self.probe_type == 'NPX':
+                y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
+                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+                canvas.ax.set_xticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+        # elif site_erp:
+        #     self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_ERP.pdf")
+        #     for i in range(len(self.erp[:, 0])):
+        #         canvas.ax.plot((self.erp[i, :] + 500*i))
         canvas.ax.set_ylabel("channels")
         canvas.ax.set_title(str(self.parmfile))
         self.draw_lines(canvas.ax)
@@ -530,12 +626,12 @@ class LaminarModel():
         site_area_deep = self._view.ui.areatextdeep.toPlainText()
         active_landmarks = [k for (k, v) in self.landmarkBoolean.items() if v == True]
         # convert channels into plot pixels - divide actual depth by column channel spacing
-        column_distances = [int(v[1]) for (k,v) in self.column_xy.items()]
+        column_distances = [int(v[1]) for (k,v) in self.column_xy[self.current_probe_index].items()]
         column_diffs = [column_distances[i+1]-column_distances[i] for i in range(len(column_distances)-1)]
         # take most common difference - might run into issues if the electrode pattern is really odd
         column_spacing = max(set(column_diffs), key=column_diffs.count)
         active_positions_pixels = [temp_landmark_dict[lm] for lm in active_landmarks]
-        active_positions = [int(self.column_xy[self.column_keys[int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
+        active_positions = [int(self.column_xy[self.current_probe_index][self.column_keys[self.current_probe_index][int(round(temp_landmark_dict[lm]))]][1]) for lm in active_landmarks]
         active_assignments = [self._view.ui.layerBorders[lm] for lm in active_landmarks]
 
         if (len(active_landmarks) < 2) and (self._view.ui.badsitecheckBox.isChecked() == False):
@@ -553,9 +649,9 @@ class LaminarModel():
         # which would suggest no active 3/4 boundary. Forces user to guess if boundary is not apparent.
 
         channel_dict = {}
-        for ch in list(self.channel_xy.keys()):
+        for ch in list(self.channel_xy[self.current_probe_index].keys()):
             # get channel position in pixels
-            channel_position = int(self.channel_xy[ch][1])/column_spacing
+            channel_position = int(self.channel_xy[self.current_probe_index][ch][1])/column_spacing
             # find
             try:
                 min_index = abs(np.array(active_positions_pixels) - channel_position).argmin()
@@ -590,12 +686,12 @@ class LaminarModel():
                 location_label = upper_top
 
             elif upper_values and not lower_values:
-                lower_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[1])[0][0]]
-                upper_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[0])[0][0]]
-                lower_position = active_positions[np.where(active_positions_pixels == upper_values[1])[0][0]]
-                upper_position = active_positions[np.where(active_positions_pixels == upper_values[0])[0][0]]
-                lower_assignment = active_assignments[np.where(active_positions_pixels == upper_values[1])[0][0]]
-                upper_assignment = active_assignments[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                lower_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                upper_landmark = active_landmarks[np.where(active_positions_pixels == upper_values[1])[0][0]]
+                lower_position = active_positions[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                upper_position = active_positions[np.where(active_positions_pixels == upper_values[1])[0][0]]
+                lower_assignment = active_assignments[np.where(active_positions_pixels == upper_values[0])[0][0]]
+                upper_assignment = active_assignments[np.where(active_positions_pixels == upper_values[1])[0][0]]
                 lower_top, lower_bottom = lower_landmark.split('/')
                 upper_top, upper_bottom = upper_landmark.split('/')
                 location_label = lower_bottom
@@ -604,7 +700,7 @@ class LaminarModel():
                 y_in = np.array([upper_position, lower_position])
                 y_out = np.array([upper_assignment, lower_assignment])
                 f = interp1d(y_in, y_out, fill_value='extrapolate')
-                channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
+                channel_dict[ch] = [location_label, int(f(channel_position*column_spacing)), channel_position]
             except:
                 channel_dict[ch] = [location_label, location_label, channel_position]
         complete_dict = {}
@@ -612,7 +708,12 @@ class LaminarModel():
         complete_dict['parmfile'] = self.parmfile
         complete_dict['site area'] = site_area
         complete_dict['site area deep'] = site_area_deep
-        self.depth_mapped = {**complete_dict, **position_memory}
+
+        # assign new depth mapping to depth dictionary currently in celldb if it exists
+        self.depth_mapped = self.loadedds
+        self.depth_mapped[self.probe[self.current_probe_index]] = {**complete_dict, **position_memory}
+        # update database loaded depths
+        self.loadedds = self.depth_mapped
 
 
     def load_depth_from_db(self):
@@ -620,17 +721,23 @@ class LaminarModel():
         sql = f"SELECT * FROM gDataRaw WHERE id={int(self.rawid)}"
         draw = db.pd_query(sql)
         loadedds = json.loads(draw.loc[0,'depthinfo'])
+        self.loadedds = {}
+        self.loadedds = loadedds
         if self._view.ui.sitealigncheckBox.isChecked():
             lower_pad_size = self.padding[0]
-            for landmark in list(loadedds['landmarkPosition'].keys()):
-                self.landmarkPosition[landmark] = loadedds['landmarkPosition'][landmark]+lower_pad_size
+            for landmark in list(loadedds[self.probe[self.current_probe_index]]['landmarkPosition'].keys()):
+                self.landmarkPosition[landmark] = loadedds[self.probe[self.current_probe_index]]['landmarkPosition'][landmark]+lower_pad_size
         else:
-            for landmark in list(loadedds['landmarkPosition'].keys()):
-                self.landmarkPosition[landmark] = loadedds['landmarkPosition'][landmark]
-        self.landmarkBoolean = loadedds['landmarkBoolean']
+            for probe in self.probe:
+                try:
+                    for landmark in list(loadedds[probe]['landmarkPosition'].keys()):
+                        self.landmarkPosition[landmark] = loadedds[self.probe[self.current_probe_index]]['landmarkPosition'][landmark]
+                except:
+                    continue
         try:
-            self.area = loadedds['site area']
-            self.area_deep = loadedds['site area deep']
+            self.landmarkBoolean = loadedds[self.probe[self.current_probe_index]]['landmarkBoolean']
+            self.area = loadedds[self.probe[self.current_probe_index]]['site area']
+            self.area_deep = loadedds[self.probe[self.current_probe_index]]['site area deep']
         except:
             self.area = ''
             self.area_deep = ''
@@ -656,43 +763,43 @@ class LaminarModel():
         parmfile = self.parmfile[:-2]
         fig_loc = f"/auto/data/web/celldb/analysis/{animalid}/{year}/{parmfile}.lfp_depth_markers.jpg"
         f, ax = plt.subplots(1,3, figsize=(15, 5), layout='tight')
-        im = ax[0].imshow(self.psd_norm, origin='lower', aspect='auto', clim=[0, self.cmax])
-        ax[0].set_xlim(self.freqs[0], self.freqs[-1])
+        im = ax[0].imshow(self.psd_norm[self.current_probe_index], origin='lower', aspect='auto', clim=[0, self.cmax])
+        ax[0].set_xlim(self.freqs[self.current_probe_index][0], self.freqs[self.current_probe_index][-1])
         ax[0].set_xlabel("frequency")
         # f.colorbar(im, cax=ax[0].cax)
-        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
         ax[0].set_yticks(y_ticks)
         if self.probe == 'NPX':
-            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
-            ax[0].set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+            y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
+            ax[0].set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
 
-        im2 = ax[1].imshow(self.csd, origin='lower', aspect='auto')
-        x_ticks = np.linspace(0, len(self.csd[0, :]), 5)
+        im2 = ax[1].imshow(self.csd[self.current_probe_index], origin='lower', aspect='auto')
+        x_ticks = np.linspace(0, len(self.csd[self.current_probe_index][0, :]), 5)
         x_ticklabels = np.round(np.linspace(-self.window, self.window, 5), decimals=2)
         ax[1].set_xticks(x_ticks)
         ax[1].set_xticklabels(x_ticklabels)
         ax[1].set_xlabel("time (s)")
         # cbar = canvas.fig.colorbar(im, cax=canvas.cax, ticks=[self.csd[1:-1, :].max(), self.csd[1:-1, :].min()])
         # cbar.ax.set_yticklabels(['source', 'sink'])
-        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
         ax[1].set_yticks(y_ticks)
         if self.probe == 'NPX':
-            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
-            ax[1].set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
-        idx1 = np.where(self.freqs > 1)[0][0]
-        idx15 = np.where(self.freqs < 15)[0][-1]
-        gamma_cohmat = np.squeeze(self.coh.mean(axis=0))
+            y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
+            ax[1].set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+        idx1 = np.where(self.freqs[self.current_probe_index] > 1)[0][0]
+        idx15 = np.where(self.freqs[self.current_probe_index] < 15)[0][-1]
+        gamma_cohmat = np.squeeze(self.coh[self.current_probe_index].mean(axis=0))
         im3 = ax[2].imshow(gamma_cohmat, origin='lower', aspect='auto')
         # cbar = canvas.fig.colorbar(im, cax=canvas.cax)
-        y_ticks = np.arange(0, len(self.psd_norm[:, 0]), 8)
+        y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
         ax[2].set_yticks(y_ticks)
         ax[2].set_xticks(y_ticks)
         if self.probe == 'NPX':
-            y_tick_channels = np.take(self.column_keys, y_ticks, axis=0)
+            y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
             ax[2].set_yticklabels(
-                ["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+                ["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
             ax[2].set_xticklabels(
-                ["ch" + str(i) + '\n' + str(self.column_xy[i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+                ["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
 
         # draw some lines
         for sName in self.landmarks:
@@ -800,6 +907,19 @@ class LaminarCtrl():
             self._model.sites(animal)
             self._view.ui.sitecomboBox.addItems(self._model.sitelist)
 
+    def update_probecomboBox(self):
+        getSelected = self._view.ui.siteList.selectedItems()
+        if getSelected:
+            baseNode = getSelected[0]
+            probes = baseNode.text(3)
+            self._model.site_probes = probes.split(", ")
+            self._view.ui.probecomboBox.clear()
+            self._view.ui.probecomboBox.addItems(self._model.site_probes)
+            self._model.current_probe = self._view.ui.probecomboBox.currentText()
+        else:
+            pass
+
+
     def update_siteList(self, index):
         self._view.ui.siteList.blockSignals(True)
         self._view.ui.siteList.setSortingEnabled(False)
@@ -812,11 +932,18 @@ class LaminarCtrl():
             files = self._model.parmfilelist
             rawids = self._model.rawids
             dbcheck = self._model.dbcheck
+            probe_check, probe_type = self._model.site_probe_check()
+            self._model.parmfile_probes = probe_check
+            self._model.parmfile_probe_type = {pf: prb_type for (pf, prb_type) in zip(files, probe_type)}
             for i in range(len(files)):
                 item = QTreeWidgetItem(None)
                 item.setText(0, files[i])
                 item.setText(1, str(rawids[i]))
                 item.setText(2, dbcheck[i])
+                try:
+                    item.setText(3, ', '.join(probe_check[i]))
+                except:
+                    pass
                 tree_items.append(item)
 
         self._view.ui.siteList.insertTopLevelItems(0, tree_items)
@@ -845,10 +972,13 @@ class LaminarCtrl():
         elif self._view.ui.localnormradioButton.isChecked():
             self._model.local_normalization()
             self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
+            # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
+            #                       self._view.ui.siteCSDradioButton.isChecked(),
+            #                       self._view.ui.siteCOHradioButton.isChecked(),
+            #                       self._view.ui.siteERPradioButton.isChecked())
             self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
                                   self._view.ui.siteCSDradioButton.isChecked(),
-                                  self._view.ui.siteCOHradioButton.isChecked(),
-                                  self._view.ui.siteERPradioButton.isChecked())
+                                  self._view.ui.siteCOHradioButton.isChecked())
             self._view.ui.templateCanvas.canvas.draw()
             self._view.ui.siteCanvas.canvas.draw()
 
@@ -863,6 +993,7 @@ class LaminarCtrl():
             self._view.ui.siteCanvas.canvas.draw()
 
     def load_site_csd_psd(self):
+        self.update_probecomboBox()
         align = self._view.ui.sitealigncheckBox.isChecked()
         getSelected = self._view.ui.siteList.selectedItems()
         if getSelected:
@@ -870,18 +1001,53 @@ class LaminarCtrl():
             getChildNode = baseNode.text(0)
             self._model.parmfile = str(getChildNode)
             rawid = baseNode.text(1)
-            db_available = baseNode.text(2)
+            self._model.db_available = baseNode.text(2)
             self._model.rawid = rawid
         self._model.siteid = self._view.ui.sitecomboBox.currentText()
         self._model.load_area_from_db()
         animalid = self._view.ui.animalcomboBox.currentText()
-        rawpath = Path('/auto/data/daq')
+        rawpath = self._model.raw_data_path
         sql = f"SELECT gDataRaw.* FROM gDataRaw WHERE cellid like '{self._model.siteid}%%' and bad=0 and training = 0"
         dRawFiles = db.pd_query(sql)
         resppath = dRawFiles['resppath'][0]
         parmfilepath = [rawpath/animalid/self._model.siteid/self._model.parmfile]
+        self._model.bnb_parmfile_path = parmfilepath
+        self._model.bnb_raw_path = rawpath / animalid / self._model.siteid / 'raw' / self._model.parmfile[:9]
+        # get nearest FTC info if it exists.
+        FTC_parmfile_ints = [int(parmfile[7:9]) for parmfile in self._model.parmfilelist if 'FTC' in parmfile]
+        FTC_parmfiles = [parmfile for parmfile in self._model.parmfilelist if 'FTC' in parmfile]
+        BNB_int = int(self._model.parmfile[7:9])
+        if FTC_parmfile_ints:
+            # find parmfile closest to selected BNB
+            FTC_BNB_dist = [abs(FTC_int - BNB_int) for FTC_int in FTC_parmfile_ints]
+            parmfile_dists = list(zip(FTC_BNB_dist, FTC_parmfiles))
+            parmfile_dists.sort()
+            channel_match = False
+            for pf_ind, parmfile in parmfile_dists:
+                if channel_match:
+                    break
+                self._model.ftc_parmfile = parmfile
+                self._model.ftc_parmfile_path = [rawpath/animalid/self._model.siteid/self._model.ftc_parmfile]
+                self._model.ftc_raw_path = rawpath / animalid / self._model.siteid / 'raw' / self._model.ftc_parmfile[:9]
+                try:
+                    if self._model.parmfile_probe_type[parmfile] == 'NPX':
+                        self._model.BNB_FTC_channel_match(self._model.ftc_raw_path, self._model.bnb_raw_path)
+                        self._model.FTC_mua_heatmap(self._model.ftc_parmfile_path)
+                        channel_match = True
+                    elif self._model.parmfile_probe_type[parmfile] == 'UCLA':
+                        # assume the recordings use the same channel map
+                        self._model.FTC_mua_heatmap(self._model.ftc_parmfile_path)
+                        channel_match = True
+                    else:
+                        channel_match = False
+                        print("Channel maps between BNB and FTC might not match because probe type is unknown. Skipping")
+                except:
+                    continue
+
         self._model.site_csd_psd(parmfilepath, align=align)
-        if db_available != 'No':
+        # update default model for probes in current site
+        self._model.update_default_landmarkPositions
+        if self._model.db_available != 'No':
             # load saved depth data
             self._model.load_depth_from_db()
             # reassign gui settings - checkboxes and text
@@ -894,29 +1060,41 @@ class LaminarCtrl():
                         del self._model.landmarkBoolean[landmark]
             self._view.ui.areatext.setText(self._model.area)
             self._view.ui.areatextdeep.setText(self._model.area_deep)
+        else:
+            self._model.loadedds = {}
         self.normalization()
         self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
+        # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
+        #                       self._view.ui.siteCSDradioButton.isChecked(), self._view.ui.siteCOHradioButton.isChecked(),
+        #                       self._view.ui.siteERPradioButton.isChecked())
         self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-                              self._view.ui.siteCSDradioButton.isChecked(), self._view.ui.siteCOHradioButton.isChecked(),
-                              self._view.ui.siteERPradioButton.isChecked())
+                              self._view.ui.siteCSDradioButton.isChecked(), self._view.ui.siteCOHradioButton.isChecked())
         self._view.ui.templateCanvas.canvas.draw()
         self._view.ui.siteCanvas.canvas.draw()
         self.lineconnect()
 
     def update_plots(self):
-        template_psd_requested = self._view.ui.tempPSDradioButton.isChecked()
-        site_psd_requested = self._view.ui.sitePSDradioButton.isChecked()
-        site_csd_requested = self._view.ui.siteCSDradioButton.isChecked()
-        site_coh_requested = self._view.ui.siteCOHradioButton.isChecked()
-        site_erp_requested = self._view.ui.siteERPradioButton.isChecked()
-        self._model.template_plot(self._view.ui.templateCanvas.canvas, template_psd_requested)
-        self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-                              self._view.ui.siteCSDradioButton.isChecked(),
-                              self._view.ui.siteCOHradioButton.isChecked(),
-                              self._view.ui.siteERPradioButton.isChecked())
-        self._view.ui.templateCanvas.canvas.draw()
-        self._view.ui.siteCanvas.canvas.draw()
-        self.lineconnect()
+        try:
+            template_psd_requested = self._view.ui.tempPSDradioButton.isChecked()
+            site_psd_requested = self._view.ui.sitePSDradioButton.isChecked()
+            site_csd_requested = self._view.ui.siteCSDradioButton.isChecked()
+            site_coh_requested = self._view.ui.siteCOHradioButton.isChecked()
+            # site_erp_requested = self._view.ui.siteERPradioButton.isChecked()
+            self._model.current_probe = self._view.ui.probecomboBox.currentText()
+            self.update_current_probe_index()
+            self._model.template_plot(self._view.ui.templateCanvas.canvas, template_psd_requested)
+            # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
+            #                       self._view.ui.siteCSDradioButton.isChecked(),
+            #                       self._view.ui.siteCOHradioButton.isChecked(),
+            #                       self._view.ui.siteERPradioButton.isChecked())
+            self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
+                                  self._view.ui.siteCSDradioButton.isChecked(),
+                                  self._view.ui.siteCOHradioButton.isChecked())
+            self._view.ui.templateCanvas.canvas.draw()
+            self._view.ui.siteCanvas.canvas.draw()
+            self.lineconnect()
+        except:
+            print("Can't update plot. Site not loaded?")
 
     def updatelandmarkcomboBox(self, sepName, checkbox):
         print(f'updating dropdown with {sepName}...')
@@ -929,6 +1107,10 @@ class LaminarCtrl():
         # self._model.draw_lines(self._view.ui.siteCanvas.canvas.ax)
         # self._view.ui.siteCanvas.canvas.draw()
         print('done')
+
+    def update_current_probe_index(self):
+        self._model.current_probe_index = [index for index, probe_id in enumerate(self._model.probe) if
+                                    self._model.current_probe == probe_id[-1:]][0]
 
     def template_lines(self):
         self._model.template_landmarkBoolean = self._view.ui.templatelandmarkcheckBox.isChecked()
@@ -998,7 +1180,8 @@ class LaminarCtrl():
         self._view.ui.tempPSDradioButton.toggled.connect(self.update_plots)
         self._view.ui.sitePSDradioButton.toggled.connect(self.update_plots)
         self._view.ui.siteCOHradioButton.toggled.connect(self.update_plots)
-        self._view.ui.siteERPradioButton.toggled.connect(self.update_plots)
+        self._view.ui.siteFTCradioButton.toggled.connect(self.update_plots)
+        # self._view.ui.siteERPradioButton.toggled.connect(self.update_plots)
         # set the subset of separators to consider
         for boxName, checkBox in self._view.ui.layerCheckBoxes.items():
             checkBox.stateChanged.connect(partial(self.updatelandmarkcomboBox,
@@ -1015,6 +1198,8 @@ class LaminarCtrl():
         self._view.ui.figsavepushButton.clicked.connect(self.savecurrentfig)
         self._view.ui.themecheckBox.toggled.connect(self.changeTheme)
         self._view.ui.badsitecheckBox.toggled.connect(self.landmarkreset)
+        self._view.ui.probecomboBox.currentIndexChanged.connect(self.update_plots)
+
 
 def main():
     """Main function."""
