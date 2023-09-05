@@ -88,12 +88,12 @@ def parmfile_event_lfp(parmfile):
 
     # load data
     print("loading data...")
-    rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=True, rawchans=None, stim=False,
+    rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=False, rawchans=None, stim=False,
                            rasterfs=rasterfs, rawlp=rawlp, rawhp=rawhp)
     lfp_ = rec['raw']._data.copy()
 
     # remove channel offset - seems to be an issue with neuropixels shouldn't impact anything else
-    offset = lfp_.mean(axis=1)
+    offset = np.nanmean(lfp_, axis=1)
     lfp_ = lfp_ - offset[:, np.newaxis]
 
     # find stimulus onset
@@ -119,93 +119,441 @@ def parmfile_event_lfp(parmfile):
     except:
         channel_xy = [None]
 
-    probe = rec['raw'].meta['probe'][0]
-    if probe == 'NPX':
-        column_xy = {k:v for (k,v) in channel_xy.items() if v[0] == '11'}
-        physical_channel_num = rec['raw'].chans
-        physical_channel_int = [int(ch) for ch in physical_channel_num]
-        column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
-        col_sort_dict = {k: column_xy[k] for k in column_xy_sorted}
-        sorted_physical_index = [physical_channel_num.index(ch) for ch in column_xy_sorted]
-        column_nums_sorted = [int(ch) for ch in column_xy_sorted]
-        left_lfp = np.take(lfp_, sorted_physical_index, axis=0)
-        left_lfp_events = np.take(lfp_events, sorted_physical_index, axis=1)
-        # deal with discontinuity...fill missing channels with nans
-        #find indexes where channels are discontinous
-        try:
-            # diffs = [[bool((y - x) == 1) for x, y in zip(physical_channel_int, physical_channel_int[1:])].index(False)]
-            column_diffs = [i for i,x in enumerate([(y-x) == 4 for x,y in zip(column_nums_sorted, column_nums_sorted[1:])]) if x == False]
+    probes = rec['raw'].meta['probe']
+    probe_type = rec['raw'].meta['probe_type']
+
+    csd_list = []
+    power_list = []
+    freqs_list = []
+    column_xy_sorted_list = []
+    column_xy_list = []
+    coh_mat_list = []
+
+    for prb_ind in range(len(probes)):
+        if probe_type == 'NPX':
+            column_xy = {k:v for (k,v) in channel_xy[prb_ind].items() if v[0] == '11'}
+            probe_letter = probes[prb_ind][-1:]
+            if len(probes) >= 2:
+                physical_channel_num = [prb_ch for prb_ch in rec['raw'].chans if f"{probe_letter}-" in prb_ch]
+            else:
+                physical_channel_num = rec['raw'].chans
+            # sort xy col dict based on xy position
+            column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[prb_ind][k][1]))
+            col_sort_dict = {k: column_xy[k] for k in column_xy_sorted}
+            # check to see if newer version of baphy_experiment is using letters in channel naming scheme
+            chan_name_letters = any([channel_char.isalpha() for channel  in physical_channel_num for channel_char in channel])
+            if chan_name_letters:
+                physical_channel_int = [int(ch[2:]) for ch in physical_channel_num]
+                sorted_physical_index = [rec['raw'].chans.index(f"{probe_letter}-"+ch) for ch in column_xy_sorted]
+            else:
+                physical_channel_int = [int(ch[2:]) for ch in physical_channel_num]
+                sorted_physical_index = [physical_channel_num.index(ch) for ch in column_xy_sorted]
+            column_nums_sorted = [int(ch) for ch in column_xy_sorted]
+            left_lfp = np.take(lfp_, sorted_physical_index, axis=0)
+            left_lfp_events = np.take(lfp_events, sorted_physical_index, axis=1)
+            # deal with discontinuity...fill missing channels with nans
+            #find indexes where channels are discontinous
+            try:
+                # diffs = [[bool((y - x) == 1) for x, y in zip(physical_channel_int, physical_channel_int[1:])].index(False)]
+                column_diffs = [i for i,x in enumerate([(y-x) == 4 for x,y in zip(column_nums_sorted, column_nums_sorted[1:])]) if x == False]
 
 
-        except:
-            print("all channels are contiguous with one another")
-            column_diffs = False
-        if column_diffs:
-            for dif in column_diffs:
-                # how many channels are missing between indexes
-                gap_len = (column_nums_sorted[dif + 1] - (column_nums_sorted[dif] + 4))/4
-                gap_chans = np.arange(column_nums_sorted[dif]+4, column_nums_sorted[dif + 1], 4)
-                # fill lfp with NaNs of the same shape as data and number of missing channels
-                gap_chans_y = np.arange(int(column_xy[str(column_nums_sorted[dif])][1])+40, int(column_xy[str(column_nums_sorted[dif+1])][1]), 40)
-                channel_xy_gap_filled = channel_xy.copy()
-                for i in range(len(gap_chans)):
-                    column_xy[str(gap_chans[i])] = ['11', gap_chans_y[i]]
-                    channel_xy_gap_filled[str(gap_chans[i])] = ['11', gap_chans_y[i]]
-                column_xy_sorted = sorted(column_xy, key=lambda k: int(column_xy[k][1]))
-                left_lfp_gap = np.empty((len(gap_chans), len(left_lfp[0, :])))
-                left_events_gap = np.empty((len(left_lfp_events[:, 0, 0]), len(gap_chans), len(left_lfp_events[0, 0, :])))
-                left_lfp_gap[:] = np.nan
-                left_events_gap[:] = np.nan
-                left_lfp = np.concatenate((left_lfp[:dif+1], left_lfp_gap, left_lfp[dif+1:]), axis=0)
-                left_lfp_events = np.concatenate((left_lfp_events[:, :dif+1, :], left_events_gap, left_lfp_events[:, dif+1:, :]), axis=1)
+            except:
+                print("all channels are contiguous with one another")
+                column_diffs = False
+            if column_diffs:
+                for dif in column_diffs:
+                    # how many channels are missing between indexes
+                    gap_len = (column_nums_sorted[dif + 1] - (column_nums_sorted[dif] + 4))/4
+                    gap_chans = np.arange(column_nums_sorted[dif]+4, column_nums_sorted[dif + 1], 4)
+                    # fill lfp with NaNs of the same shape as data and number of missing channels
+                    gap_chans_y = np.arange(int(column_xy[str(column_nums_sorted[dif])][1])+40, int(column_xy[str(column_nums_sorted[dif+1])][1]), 40)
+                    channel_xy_gap_filled = channel_xy.copy()
+                    for i in range(len(gap_chans)):
+                        column_xy[str(gap_chans[i])] = ['11', gap_chans_y[i]]
+                        channel_xy_gap_filled[str(gap_chans[i])] = ['11', gap_chans_y[i]]
+                    column_xy_sorted = sorted(column_xy, key=lambda k: int(column_xy[k][1]))
+                    left_lfp_gap = np.empty((len(gap_chans), len(left_lfp[0, :])))
+                    left_events_gap = np.empty((len(left_lfp_events[:, 0, 0]), len(gap_chans), len(left_lfp_events[0, 0, :])))
+                    left_lfp_gap[:] = np.nan
+                    left_events_gap[:] = np.nan
+                    left_lfp = np.concatenate((left_lfp[:dif+1], left_lfp_gap, left_lfp[dif+1:]), axis=0)
+                    left_lfp_events = np.concatenate((left_lfp_events[:, :dif+1, :], left_events_gap, left_lfp_events[:, dif+1:, :]), axis=1)
 
+                    # calculate csd for each trial
+                    left_csd = np.zeros_like(left_lfp_events[:, :, :])
+                    for i in range(len(left_lfp_events[:, 0, 0])):
+                        # left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=True, nan_axis=0)
+                        left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 17, contains_nan=True, nan_axis=0)
+
+
+            else:
                 # calculate csd for each trial
                 left_csd = np.zeros_like(left_lfp_events[:, :, :])
                 for i in range(len(left_lfp_events[:, 0, 0])):
-                    # left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=True, nan_axis=0)
-                    left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 17, contains_nan=True, nan_axis=0)
+                    left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=False)
 
+        elif probe_type == 'UCLA':
+            column_xy = {k:v for (k,v) in channel_xy.items() if v[0] == '-20'}
+            column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
+            column_nums_sorted = [int(ch)-1 for ch in column_xy_sorted]
+            left_lfp = np.take(lfp_, column_nums_sorted, axis=0)
+            left_lfp_events = np.take(lfp_events, column_nums_sorted, axis=1)
 
-        else:
             # calculate csd for each trial
             left_csd = np.zeros_like(left_lfp_events[:, :, :])
             for i in range(len(left_lfp_events[:, 0, 0])):
-                left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=False)
+                left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7, contains_nan=False)
+            # left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
+            # left_lfp, center_lfp, right_lfp = column_split(lfp_, axis=0)
+            # column_xy_sorted = None
+            #
+            # # calculate csd for each trial
+            # left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
+            # for i in range(len(left_lfp_events[:, 0, 0])):
+            #     left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7)
 
-    elif probe == 'UCLA':
-        column_xy = {k:v for (k,v) in channel_xy.items() if v[0] == '-20'}
-        column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
-        column_nums_sorted = [int(ch)-1 for ch in column_xy_sorted]
-        left_lfp = np.take(lfp_, column_nums_sorted, axis=0)
-        left_lfp_events = np.take(lfp_events, column_nums_sorted, axis=1)
+        else:
+            raise ValueError("Unsupported probe type")
 
-        # calculate csd for each trial
-        left_csd = np.zeros_like(left_lfp_events[:, :, :])
-        for i in range(len(left_lfp_events[:, 0, 0])):
-            left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7, contains_nan=False)
-        # left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
-        # left_lfp, center_lfp, right_lfp = column_split(lfp_, axis=0)
-        # column_xy_sorted = None
-        #
-        # # calculate csd for each trial
-        # left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
-        # for i in range(len(left_lfp_events[:, 0, 0])):
-        #     left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7)
+        left_csd = left_csd.mean(axis=0)
 
-    left_csd = left_csd.mean(axis=0)
+        # relative power spectrum
+        freqs, power, relative_power = welch_relative_power(left_lfp, rasterfs, nperseg=1024)
 
-    # relative power spectrum
-    freqs, power, relative_power = welch_relative_power(left_lfp, rasterfs, nperseg=1024)
+        # channel by channel coherence matrix
+        fx, coh_mat = coherence_matrix(left_lfp, rasterfs, nperseg=1024)
 
-    # channel by channel coherence matrix
-    fx, coh_mat = coherence_matrix(left_lfp, rasterfs, nperseg=1024)
+        column_xy_list.append(column_xy)
+        csd_list.append(left_csd)
+        power_list.append(power)
+        freqs_list.append(freqs)
+        column_xy_sorted_list.append(column_xy_sorted)
+        coh_mat_list.append(coh_mat)
 
     windowtime = stim_window / rasterfs
 
-    erp = left_lfp_events.mean(axis=0)
+    # erp = left_lfp_events.mean(axis=0)
 
-    return left_csd, power, freqs, windowtime, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, erp, probe
+    # return left_csd, power, freqs, windowtime, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, probe
+    return csd_list, power_list, freqs_list, windowtime, rasterfs, column_xy_sorted_list, column_xy_list, channel_xy, coh_mat_list, probes, probe_type
 
+@memory.cache
+def parmfile_mua_FTC(parmfile):
+
+    # same settings as template
+    rasterfs = 500
+    rawlp = 250
+    rawhp = 1
+    stim_window = 0.2 * rasterfs
+    ex = BAPHYExperiment(parmfile=parmfile)
+
+    # load data
+    print("loading data...")
+    rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=False, rawchans=None, stim=False,
+                           rasterfs=rasterfs, rawlp=rawlp, rawhp=rawhp)
+    lfp_ = rec['raw']._data.copy()
+
+    # remove channel offset - seems to be an issue with neuropixels shouldn't impact anything else
+    offset = np.nanmean(lfp_, axis=1)
+    lfp_ = lfp_ - offset[:, np.newaxis]
+
+    # find stimulus onset
+    ep = rec['raw'].epochs
+    epoch = ep.loc[ep['name'].str.startswith("PreStimSilence"), 'name'].values[0]
+    epochs = rec['raw'].get_epoch_bounds(epoch)
+    stim_time = int(np.round(np.array(epochs)[0, 1] - np.array(epochs)[0, 0], decimals=2) * rasterfs)
+
+    # check that there is a long enough prestimulus window to use same settings as template for CSD else shorten
+    if stim_time < stim_window:
+        stim_window = stim_time
+
+    # extract event epochs
+    lfp_epochs = rec['raw'].extract_epoch('TRIAL')
+
+    # extract window around stimulus
+    lfp_events = lfp_epochs[:, :, int(stim_time - stim_window):int(stim_time + stim_window)]
+
+    # extract data for each column of electrodes
+    # check if channel map is returned - if it is returned and channels > 64 assume neuropixel
+    try:
+        channel_xy = rec['raw'].meta['channel_xy']
+    except:
+        channel_xy = [None]
+
+    probes = rec['raw'].meta['probe']
+    probe_type = rec['raw'].meta['probe_type']
+
+    csd_list = []
+    power_list = []
+    freqs_list = []
+    column_xy_sorted_list = []
+    column_xy_list = []
+    coh_mat_list = []
+
+    for prb_ind in range(len(probes)):
+        if probe_type == 'NPX':
+            column_xy = {k:v for (k,v) in channel_xy[prb_ind].items() if v[0] == '11'}
+            probe_letter = probes[prb_ind][-1:]
+            if len(probes) >= 2:
+                physical_channel_num = [prb_ch for prb_ch in rec['raw'].chans if f"{probe_letter}-" in prb_ch]
+            else:
+                physical_channel_num = rec['raw'].chans
+            # sort xy col dict based on xy position
+            column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[prb_ind][k][1]))
+            col_sort_dict = {k: column_xy[k] for k in column_xy_sorted}
+            # check to see if newer version of baphy_experiment is using letters in channel naming scheme
+            chan_name_letters = any([channel_char.isalpha() for channel  in physical_channel_num for channel_char in channel])
+            if chan_name_letters:
+                physical_channel_int = [int(ch[2:]) for ch in physical_channel_num]
+                sorted_physical_index = [rec['raw'].chans.index(f"{probe_letter}-"+ch) for ch in column_xy_sorted]
+            else:
+                physical_channel_int = [int(ch[2:]) for ch in physical_channel_num]
+                sorted_physical_index = [physical_channel_num.index(ch) for ch in column_xy_sorted]
+            column_nums_sorted = [int(ch) for ch in column_xy_sorted]
+            left_lfp = np.take(lfp_, sorted_physical_index, axis=0)
+            left_lfp_events = np.take(lfp_events, sorted_physical_index, axis=1)
+            # deal with discontinuity...fill missing channels with nans
+            #find indexes where channels are discontinous
+            try:
+                # diffs = [[bool((y - x) == 1) for x, y in zip(physical_channel_int, physical_channel_int[1:])].index(False)]
+                column_diffs = [i for i,x in enumerate([(y-x) == 4 for x,y in zip(column_nums_sorted, column_nums_sorted[1:])]) if x == False]
+
+
+            except:
+                print("all channels are contiguous with one another")
+                column_diffs = False
+            if column_diffs:
+                for dif in column_diffs:
+                    # how many channels are missing between indexes
+                    gap_len = (column_nums_sorted[dif + 1] - (column_nums_sorted[dif] + 4))/4
+                    gap_chans = np.arange(column_nums_sorted[dif]+4, column_nums_sorted[dif + 1], 4)
+                    # fill lfp with NaNs of the same shape as data and number of missing channels
+                    gap_chans_y = np.arange(int(column_xy[str(column_nums_sorted[dif])][1])+40, int(column_xy[str(column_nums_sorted[dif+1])][1]), 40)
+                    channel_xy_gap_filled = channel_xy.copy()
+                    for i in range(len(gap_chans)):
+                        column_xy[str(gap_chans[i])] = ['11', gap_chans_y[i]]
+                        channel_xy_gap_filled[str(gap_chans[i])] = ['11', gap_chans_y[i]]
+                    column_xy_sorted = sorted(column_xy, key=lambda k: int(column_xy[k][1]))
+                    left_lfp_gap = np.empty((len(gap_chans), len(left_lfp[0, :])))
+                    left_events_gap = np.empty((len(left_lfp_events[:, 0, 0]), len(gap_chans), len(left_lfp_events[0, 0, :])))
+                    left_lfp_gap[:] = np.nan
+                    left_events_gap[:] = np.nan
+                    left_lfp = np.concatenate((left_lfp[:dif+1], left_lfp_gap, left_lfp[dif+1:]), axis=0)
+                    left_lfp_events = np.concatenate((left_lfp_events[:, :dif+1, :], left_events_gap, left_lfp_events[:, dif+1:, :]), axis=1)
+
+                    # calculate csd for each trial
+                    left_csd = np.zeros_like(left_lfp_events[:, :, :])
+                    for i in range(len(left_lfp_events[:, 0, 0])):
+                        # left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=True, nan_axis=0)
+                        left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 17, contains_nan=True, nan_axis=0)
+
+
+            else:
+                # calculate csd for each trial
+                left_csd = np.zeros_like(left_lfp_events[:, :, :])
+                for i in range(len(left_lfp_events[:, 0, 0])):
+                    left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=False)
+
+        elif probe_type == 'UCLA':
+            column_xy = {k:v for (k,v) in channel_xy.items() if v[0] == '-20'}
+            column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
+            column_nums_sorted = [int(ch)-1 for ch in column_xy_sorted]
+            left_lfp = np.take(lfp_, column_nums_sorted, axis=0)
+            left_lfp_events = np.take(lfp_events, column_nums_sorted, axis=1)
+
+            # calculate csd for each trial
+            left_csd = np.zeros_like(left_lfp_events[:, :, :])
+            for i in range(len(left_lfp_events[:, 0, 0])):
+                left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7, contains_nan=False)
+            # left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
+            # left_lfp, center_lfp, right_lfp = column_split(lfp_, axis=0)
+            # column_xy_sorted = None
+            #
+            # # calculate csd for each trial
+            # left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
+            # for i in range(len(left_lfp_events[:, 0, 0])):
+            #     left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7)
+
+        else:
+            raise ValueError("Unsupported probe type")
+
+        left_csd = left_csd.mean(axis=0)
+
+        # relative power spectrum
+        freqs, power, relative_power = welch_relative_power(left_lfp, rasterfs, nperseg=1024)
+
+        # channel by channel coherence matrix
+        fx, coh_mat = coherence_matrix(left_lfp, rasterfs, nperseg=1024)
+
+        column_xy_list.append(column_xy)
+        csd_list.append(left_csd)
+        power_list.append(power)
+        freqs_list.append(freqs)
+        column_xy_sorted_list.append(column_xy_sorted)
+        coh_mat_list.append(coh_mat)
+
+    windowtime = stim_window / rasterfs
+
+    # erp = left_lfp_events.mean(axis=0)
+
+    # return left_csd, power, freqs, windowtime, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, probe
+    return csd_list, power_list, freqs_list, windowtime, rasterfs, column_xy_sorted_list, column_xy_list, channel_xy, coh_mat_list, probes, probe_type
+
+def new_parmfile_event_lfp(parmfile):
+
+    # same settings as template
+    rasterfs = 500
+    rawlp = 250
+    rawhp = 1
+    stim_window = 0.2 * rasterfs
+    ex = BAPHYExperiment(parmfile=parmfile)
+
+    # load data
+    print("loading data...")
+    rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=True, rawchans=None, stim=False,
+                           rasterfs=rasterfs, rawlp=rawlp, rawhp=rawhp)
+    lfp_ = rec['raw']._data.copy()
+
+    # remove channel offset - seems to be an issue with neuropixels shouldn't impact anything else
+    offset = np.nanmean(lfp_, axis=1)
+    lfp_ = lfp_ - offset[:, np.newaxis]
+
+    # find stimulus onset
+    ep = rec['raw'].epochs
+    epoch = ep.loc[ep['name'].str.startswith("PreStimSilence"), 'name'].values[0]
+    epochs = rec['raw'].get_epoch_bounds(epoch)
+    stim_time = int(np.round(np.array(epochs)[0, 1] - np.array(epochs)[0, 0], decimals=2) * rasterfs)
+
+    # check that there is a long enough prestimulus window to use same settings as template for CSD else shorten
+    if stim_time < stim_window:
+        stim_window = stim_time
+
+    # extract event epochs
+    lfp_epochs = rec['raw'].extract_epoch('TRIAL')
+
+    # extract window around stimulus
+    lfp_events = lfp_epochs[:, :, int(stim_time - stim_window):int(stim_time + stim_window)]
+
+    # extract data for each column of electrodes
+    # check if channel map is returned - if it is returned and channels > 64 assume neuropixel
+    try:
+        channel_xy = rec['raw'].meta['channel_xy']
+    except:
+        channel_xy = [None]
+
+    probes = rec['raw'].meta['probe']
+    probe_type = rec['raw'].meta['probe_type']
+
+    csd_list = []
+    power_list = []
+    freqs_list = []
+    column_xy_sorted_list = []
+    column_xy_list = []
+    coh_mat_list = []
+    for prb_ind, prb_name in enumerate(probes):
+        if probe_type == 'NPX':
+            column_xy = {k:v for (k,v) in channel_xy[prb_ind].items() if v[0] == '11'}
+            # kludge of getting physical channel numbers for multiple probes if numbers are concatenated
+            if len(probes) >= 2:
+                chans_per_probe = int(len(rec['raw'].chans)/len(probes))
+                physical_channel_num = rec['raw'].chans[(prb_ind*chans_per_probe):((prb_ind+1)*chans_per_probe)]
+
+            else:
+                physical_channel_num = rec['raw'].chans
+            physical_channel_int = [int(ch) for ch in physical_channel_num]
+            column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[prb_ind][k][1]))
+            col_sort_dict = {k: column_xy[k] for k in column_xy_sorted}
+            sorted_physical_index = [physical_channel_num.index(ch) + prb_ind*chans_per_probe for ch in column_xy_sorted]
+            column_nums_sorted = [int(ch) for ch in column_xy_sorted]
+            left_lfp = np.take(lfp_, sorted_physical_index, axis=0)
+            left_lfp_events = np.take(lfp_events, sorted_physical_index, axis=1)
+            # deal with discontinuity...fill missing channels with nans
+            #find indexes where channels are discontinous
+            try:
+                # diffs = [[bool((y - x) == 1) for x, y in zip(physical_channel_int, physical_channel_int[1:])].index(False)]
+                column_diffs = [i for i,x in enumerate([(y-x) == 4 for x,y in zip(column_nums_sorted, column_nums_sorted[1:])]) if x == False]
+
+
+            except:
+                print("all channels are contiguous with one another")
+                column_diffs = False
+            if column_diffs:
+                for dif in column_diffs:
+                    # how many channels are missing between indexes
+                    gap_len = (column_nums_sorted[dif + 1] - (column_nums_sorted[dif] + 4))/4
+                    gap_chans = np.arange(column_nums_sorted[dif]+4, column_nums_sorted[dif + 1], 4)
+                    # fill lfp with NaNs of the same shape as data and number of missing channels
+                    gap_chans_y = np.arange(int(column_xy[str(column_nums_sorted[dif])][1])+40, int(column_xy[str(column_nums_sorted[dif+1])][1]), 40)
+                    channel_xy_gap_filled = channel_xy.copy()
+                    for i in range(len(gap_chans)):
+                        column_xy[str(gap_chans[i])] = ['11', gap_chans_y[i]]
+                        channel_xy_gap_filled[str(gap_chans[i])] = ['11', gap_chans_y[i]]
+                    column_xy_sorted = sorted(column_xy, key=lambda k: int(column_xy[k][1]))
+                    left_lfp_gap = np.empty((len(gap_chans), len(left_lfp[0, :])))
+                    left_events_gap = np.empty((len(left_lfp_events[:, 0, 0]), len(gap_chans), len(left_lfp_events[0, 0, :])))
+                    left_lfp_gap[:] = np.nan
+                    left_events_gap[:] = np.nan
+                    left_lfp = np.concatenate((left_lfp[:dif+1], left_lfp_gap, left_lfp[dif+1:]), axis=0)
+                    left_lfp_events = np.concatenate((left_lfp_events[:, :dif+1, :], left_events_gap, left_lfp_events[:, dif+1:, :]), axis=1)
+
+                    # calculate csd for each trial
+                    left_csd = np.zeros_like(left_lfp_events[:, :, :])
+                    for i in range(len(left_lfp_events[:, 0, 0])):
+                        # left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=True, nan_axis=0)
+                        left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 17, contains_nan=True, nan_axis=0)
+
+
+            else:
+                # calculate csd for each trial
+                left_csd = np.zeros_like(left_lfp_events[:, :, :])
+                for i in range(len(left_lfp_events[:, 0, 0])):
+                    left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=False)
+
+        elif probe_type == 'UCLA':
+            column_xy = {k:v for (k,v) in channel_xy.items() if v[0] == '-20'}
+            column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
+            column_nums_sorted = [int(ch)-1 for ch in column_xy_sorted]
+            left_lfp = np.take(lfp_, column_nums_sorted, axis=0)
+            left_lfp_events = np.take(lfp_events, column_nums_sorted, axis=1)
+
+            # calculate csd for each trial
+            left_csd = np.zeros_like(left_lfp_events[:, :, :])
+            for i in range(len(left_lfp_events[:, 0, 0])):
+                left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7, contains_nan=False)
+            # left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
+            # left_lfp, center_lfp, right_lfp = column_split(lfp_, axis=0)
+            # column_xy_sorted = None
+            #
+            # # calculate csd for each trial
+            # left_csd = np.zeros_like(left_lfp_events[:, :-2, :])
+            # for i in range(len(left_lfp_events[:, 0, 0])):
+            #     left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7)
+
+        else:
+            raise ValueError("Unsupported probe type")
+
+        left_csd = left_csd.mean(axis=0)
+
+        # relative power spectrum
+        freqs, power, relative_power = welch_relative_power(left_lfp, rasterfs, nperseg=1024)
+
+        # channel by channel coherence matrix
+        fx, coh_mat = coherence_matrix(left_lfp, rasterfs, nperseg=1024)
+
+        column_xy_list.append(column_xy)
+        csd_list.append(left_csd)
+        power_list.append(power)
+        freqs_list.append(freqs)
+        column_xy_sorted_list.append(column_xy_sorted)
+        coh_mat_list.append(coh_mat)
+
+    windowtime = stim_window / rasterfs
+
+    # erp = left_lfp_events.mean(axis=0)
+
+    # return left_csd, power, freqs, windowtime, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, probe
+    return csd_list, power_list, freqs_list, windowtime, rasterfs, column_xy_sorted_list, column_xy_list, channel_xy, coh_mat_list, probes, probe_type
 
 def coherence_matrix(signal_mat, fs, nperseg):
     """
