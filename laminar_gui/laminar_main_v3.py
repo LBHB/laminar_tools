@@ -24,6 +24,9 @@ from scipy.interpolate import interp1d
 from nems_lbhb import baphy_io as io
 import datetime as dt
 import  re
+from nems_lbhb.plots import ftc_heatmap
+from nems_lbhb import baphy_experiment
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 class LaminarUi(QWidget):
     def __init__(self, *args, **kwargs):
@@ -224,9 +227,72 @@ class LaminarModel():
         self.current_probe_index = [index for index, probe_id in enumerate(self.probe) if self.current_probe == probe_id[-1:]][0]
         self.probe_type = probe_type
 
-    def FTC_mua_heatmap(self, parmfile):
-        pass
+    def remove_ax(self, canvas):
+        # delete axes from canvas
+        try:
+            canvas.fig.delaxes(canvas.ax)
+        except:
+            for i in range(len(canvas.ax)):
+                canvas.fig.delaxes(canvas.ax[i])
+        try:
+            canvas.fig.delaxes(canvas.cax)
+        except:
+            print("cax object does not exist")
 
+    def FTC_heatmap_plot(self, canvas, parmfile):
+        # remove current artists
+        self.clear_canvas(canvas)
+        self.remove_ax(canvas)
+        # # delete axes from canvas
+        # try:
+        #     canvas.fig.delaxes(canvas.ax)
+        # except:
+        #     for i in range(len(canvas.ax)):
+        #         canvas.fig.delaxes(canvas.ax[i])
+        # try:
+        #     canvas.fig.delaxes(canvas.cax)
+        # except:
+        #     print("cax object does not exist")
+
+        # f, ax = plt.subplots(2, 1)
+        # create a SU and MUA FTC heatmap subplot
+        canvas.ax = canvas.figure.subplots(1,2)
+        siteid = self.parmfile[:7]
+        print(f"Loading {parmfile}")
+        ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
+        fs = 100
+        bp = (500, 5000)
+        rec = ex.get_recording(mua=True, raw=False, pupil=False, resp=False, stim=False, recache=False, rawchans=None,
+                               rasterfs=fs, muabp=bp)
+        resp = rec['mua'].copy()
+        cellids = resp.chans
+        probe = self.probe[self.current_probe_index][-1:]
+        if probe is not None:
+            cellids=[c for c in cellids if f'{probe}-' in c]
+            resp = resp.extract_channels(cellids)
+        chans = [int(c.split('-')[-1]) for c in cellids]
+        depths = np.array(chans)
+
+        # key parameters are resp and depths. Other stuff is window dressing.
+        ftc_heatmap(siteid=siteid, resp=resp, depths=depths, probe=probe,
+                    smooth_win=3, snr_norm=True, ax=canvas.ax[0])
+
+        print(f"Loading {parmfile}")
+        ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
+        rec = ex.get_recording(loadkey=f'psth.fs{fs}')
+        resp = rec['resp'].copy()
+        cellids = resp.chans
+        if probe is not None:
+            cellids = [c for c in cellids if f'-{probe}-' in c]
+            resp = rec['resp'].extract_channels(cellids)
+        chans = [int(c.split('-')[-2]) for c in cellids]
+        depths = np.array(chans)
+
+        ftc_heatmap(siteid=siteid, resp=resp, depths=depths, probe=probe,
+                    smooth_win=3, snr_norm=True, ax=canvas.ax[1])
+
+        # draw to canvas
+        self._view.ui.templateCanvas.canvas.draw()
 
     def no_normalization(self):
         self.psd_norm = self.psd
@@ -392,8 +458,14 @@ class LaminarModel():
 
 
     def clear_canvas(self, canvas):
-        canvas.ax.clear()
-        canvas.cax.clear()
+        try:
+            canvas.ax.clear()
+        except:
+            print("canvas.ax object does not exist")
+        try:
+            canvas.cax.clear()
+        except:
+            print("canvas cax object does not exist")
 
     # def depth_mapping(self):
     #     print('mapping to nominal depths')
@@ -1082,16 +1154,26 @@ class LaminarCtrl():
             # site_erp_requested = self._view.ui.siteERPradioButton.isChecked()
             self._model.current_probe = self._view.ui.probecomboBox.currentText()
             self.update_current_probe_index()
-            self._model.template_plot(self._view.ui.templateCanvas.canvas, template_psd_requested)
-            # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-            #                       self._view.ui.siteCSDradioButton.isChecked(),
-            #                       self._view.ui.siteCOHradioButton.isChecked(),
-            #                       self._view.ui.siteERPradioButton.isChecked())
+            if self._view.ui.siteFTCcheckBox.isChecked() == False:
+                # reset canvas ax object
+                self._model.remove_ax(self._view.ui.templateCanvas.canvas)
+                self._view.ui.templateCanvas.canvas.ax = self._view.ui.templateCanvas.canvas.fig.add_subplot(111)
+                self._view.ui.templateCanvas.canvas.divider = make_axes_locatable(self._view.ui.templateCanvas.canvas.ax)
+                self._view.ui.templateCanvas.canvas.cax = self._view.ui.templateCanvas.canvas.divider.append_axes("right", size="5%", pad=0.05)
+                self._view.ui.templateCanvas.canvas.xax = self._view.ui.templateCanvas.canvas.cax.get_xaxis()
+                self._view.ui.templateCanvas.canvas.xax.set_visible(False)
+                self._model.template_plot(self._view.ui.templateCanvas.canvas, template_psd_requested)
+                # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
+                #                       self._view.ui.siteCSDradioButton.isChecked(),
+                #                       self._view.ui.siteCOHradioButton.isChecked(),
+                #                       self._view.ui.siteERPradioButton.isChecked())
+                self._view.ui.templateCanvas.canvas.draw()
             self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
                                   self._view.ui.siteCSDradioButton.isChecked(),
                                   self._view.ui.siteCOHradioButton.isChecked())
-            self._view.ui.templateCanvas.canvas.draw()
             self._view.ui.siteCanvas.canvas.draw()
+            if self._view.ui.siteFTCcheckBox.isChecked():
+                self._model.FTC_heatmap_plot(self._view.ui.templateCanvas.canvas, self._model.ftc_parmfile_path)
             self.lineconnect()
         except:
             print("Can't update plot. Site not loaded?")
@@ -1180,7 +1262,7 @@ class LaminarCtrl():
         self._view.ui.tempPSDradioButton.toggled.connect(self.update_plots)
         self._view.ui.sitePSDradioButton.toggled.connect(self.update_plots)
         self._view.ui.siteCOHradioButton.toggled.connect(self.update_plots)
-        self._view.ui.siteFTCradioButton.toggled.connect(self.update_plots)
+        self._view.ui.siteFTCcheckBox.toggled.connect(self.update_plots)
         # self._view.ui.siteERPradioButton.toggled.connect(self.update_plots)
         # set the subset of separators to consider
         for boxName, checkBox in self._view.ui.layerCheckBoxes.items():
