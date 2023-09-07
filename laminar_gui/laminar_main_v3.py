@@ -256,43 +256,74 @@ class LaminarModel():
 
         # f, ax = plt.subplots(2, 1)
         # create a SU and MUA FTC heatmap subplot
-        canvas.ax = canvas.figure.subplots(1,2)
-        siteid = self.parmfile[:7]
-        print(f"Loading {parmfile}")
-        ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
-        fs = 100
-        bp = (500, 5000)
-        rec = ex.get_recording(mua=True, raw=False, pupil=False, resp=False, stim=False, recache=False, rawchans=None,
-                               rasterfs=fs, muabp=bp)
-        resp = rec['mua'].copy()
-        cellids = resp.chans
-        probe = self.probe[self.current_probe_index][-1:]
-        if probe is not None:
-            cellids=[c for c in cellids if f'{probe}-' in c]
-            resp = resp.extract_channels(cellids)
-        chans = [int(c.split('-')[-1]) for c in cellids]
-        depths = np.array(chans)
+        try:
+            canvas.ax = canvas.figure.subplots(1,2)
+            siteid = self.parmfile[:7]
+            print(f"Loading {parmfile}")
+            ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
+            fs = 100
+            bp = (500, 5000)
+            rec = ex.get_recording(mua=True, raw=False, pupil=False, resp=False, stim=False, recache=False, rawchans=None,
+                                   rasterfs=fs, muabp=bp)
+            resp = rec['mua'].copy()
+            cellids = resp.chans
+            probe = self.probe[self.current_probe_index][-1:]
+            if probe is not None:
+                cellids=[c for c in cellids if f'{probe}-' in c]
+                resp = resp.extract_channels(cellids)
+            chans = [int(c.split('-')[-1]) for c in cellids]
+            depths = np.array(chans)
 
-        # key parameters are resp and depths. Other stuff is window dressing.
-        ftc_heatmap(siteid=siteid, resp=resp, depths=depths, probe=probe,
-                    smooth_win=3, snr_norm=True, ax=canvas.ax[0])
+            # key parameters are resp and depths. Other stuff is window dressing.
+            ftc_heatmap(siteid=siteid, resp=resp, depths=depths, probe=probe,
+                        smooth_win=3, snr_norm=True, ax=canvas.ax[0])
+        except:
+            print("Can't load MUA.")
 
-        print(f"Loading {parmfile}")
-        ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
-        rec = ex.get_recording(loadkey=f'psth.fs{fs}')
-        resp = rec['resp'].copy()
-        cellids = resp.chans
-        if probe is not None:
-            cellids = [c for c in cellids if f'-{probe}-' in c]
-            resp = rec['resp'].extract_channels(cellids)
-        chans = [int(c.split('-')[-2]) for c in cellids]
-        depths = np.array(chans)
+        try:
+            print(f"Loading {parmfile}")
+            ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
+            rec = ex.get_recording(loadkey=f'psth.fs{fs}')
+            resp = rec['resp'].copy()
+            cellids = resp.chans
+            if probe is not None:
+                cellids = [c for c in cellids if f'-{probe}-' in c]
+                resp = rec['resp'].extract_channels(cellids)
+            chans = [int(c.split('-')[-2]) for c in cellids]
+            depths = np.array(chans)
 
-        ftc_heatmap(siteid=siteid, resp=resp, depths=depths, probe=probe,
-                    smooth_win=3, snr_norm=True, ax=canvas.ax[1])
+            ftc_heatmap(siteid=siteid, resp=resp, depths=depths, probe=probe,
+                        smooth_win=3, snr_norm=True, ax=canvas.ax[1])
+        except:
+            print("Site not sorted yet? Error in plotting SU FTC heatmap")
 
         # draw to canvas
         self._view.ui.templateCanvas.canvas.draw()
+
+    def update_FTC_parmfile(self):
+        getSelected = self._view.ui.siteList.selectedItems()
+        rawpath = self.raw_data_path
+        animalid = self._view.ui.animalcomboBox.currentText()
+        if getSelected:
+            baseNode = getSelected[0]
+            getChildNode = baseNode.text(0)
+            temp_parmfile = str(getChildNode)
+            if 'FTC' in temp_parmfile:
+                self.ftc_parmfile = temp_parmfile
+                self.ftc_parmfile_path = [rawpath / animalid / self.siteid / self.ftc_parmfile]
+                self.ftc_raw_path = rawpath / animalid / self.siteid / 'raw' / self.ftc_parmfile[:9]
+                if self.parmfile_probe_type[self.ftc_parmfile] == 'NPX':
+                    self.BNB_FTC_channel_match(self.ftc_raw_path, self.bnb_raw_path)
+                    channel_match = True
+                elif self.parmfile_probe_type[self.ftc_parmfile] == 'UCLA':
+                    # assume the recordings use the same channel match
+                    channel_match = True
+                else:
+                    channel_match = False
+                    print("Channel maps between BNB and FTC might not match because probe type is unknown. Skipping")
+            else:
+                print("Current selected parmfile does not contain FTC")
+
 
     def no_normalization(self):
         self.psd_norm = self.psd
@@ -378,6 +409,15 @@ class LaminarModel():
         plots the laminar data
         """
         print('plotting laminar data...')
+        # reset template canvas
+        self.remove_ax(self._view.ui.templateCanvas.canvas)
+        self._view.ui.templateCanvas.canvas.ax = self._view.ui.templateCanvas.canvas.fig.add_subplot(111)
+        self._view.ui.templateCanvas.canvas.divider = make_axes_locatable(self._view.ui.templateCanvas.canvas.ax)
+        self._view.ui.templateCanvas.canvas.cax = self._view.ui.templateCanvas.canvas.divider.append_axes("right",
+                                                                                                          size="5%",
+                                                                                                          pad=0.05)
+        self._view.ui.templateCanvas.canvas.xax = self._view.ui.templateCanvas.canvas.cax.get_xaxis()
+        self._view.ui.templateCanvas.canvas.xax.set_visible(False)
         self.clear_canvas(canvas)
         if self._view.ui.localnormradioButton.isChecked():
             self.cmax = np.nanmax(self.template_psd_norm)
@@ -981,12 +1021,14 @@ class LaminarCtrl():
 
     def update_probecomboBox(self):
         getSelected = self._view.ui.siteList.selectedItems()
+        self._view.ui.probecomboBox.blockSignals(True)
         if getSelected:
             baseNode = getSelected[0]
             probes = baseNode.text(3)
             self._model.site_probes = probes.split(", ")
             self._view.ui.probecomboBox.clear()
             self._view.ui.probecomboBox.addItems(self._model.site_probes)
+            self._view.ui.probecomboBox.blockSignals(False)
             self._model.current_probe = self._view.ui.probecomboBox.currentText()
         else:
             pass
@@ -1117,6 +1159,8 @@ class LaminarCtrl():
                     continue
 
         self._model.site_csd_psd(parmfilepath, align=align)
+        self._model.current_probe = self._view.ui.probecomboBox.currentText()
+        self.update_current_probe_index()
         # update default model for probes in current site
         self._model.update_default_landmarkPositions
         if self._model.db_available != 'No':
@@ -1135,7 +1179,8 @@ class LaminarCtrl():
         else:
             self._model.loadedds = {}
         self.normalization()
-        self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
+        if self._view.ui.siteFTCcheckBox.isChecked() == False:
+            self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
         # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
         #                       self._view.ui.siteCSDradioButton.isChecked(), self._view.ui.siteCOHradioButton.isChecked(),
         #                       self._view.ui.siteERPradioButton.isChecked())
@@ -1173,6 +1218,7 @@ class LaminarCtrl():
                                   self._view.ui.siteCOHradioButton.isChecked())
             self._view.ui.siteCanvas.canvas.draw()
             if self._view.ui.siteFTCcheckBox.isChecked():
+                self._model.update_FTC_parmfile()
                 self._model.FTC_heatmap_plot(self._view.ui.templateCanvas.canvas, self._model.ftc_parmfile_path)
             self.lineconnect()
         except:
@@ -1193,6 +1239,29 @@ class LaminarCtrl():
     def update_current_probe_index(self):
         self._model.current_probe_index = [index for index, probe_id in enumerate(self._model.probe) if
                                     self._model.current_probe == probe_id[-1:]][0]
+
+    def update_probe_plots(self):
+        # update depth info for new probe
+        # change selected probe
+        self._model.current_probe = self._view.ui.probecomboBox.currentText()
+        self.update_current_probe_index()
+        # load depths for new probe
+        if self._model.db_available != 'No':
+            # load saved depth data
+            self._model.load_depth_from_db()
+            # reassign gui settings - checkboxes and text
+            for landmark, landbool in list(self._model.landmarkBoolean.items()):
+                if landbool:
+                    try:
+                        self._view.ui.layerCheckBoxes[landmark].setChecked(landbool)
+                    except:
+                        print("change in gui landmarks from what is in database - leaving blank")
+                        del self._model.landmarkBoolean[landmark]
+            self._view.ui.areatext.setText(self._model.area)
+            self._view.ui.areatextdeep.setText(self._model.area_deep)
+        else:
+            self._model.loadedds = {}
+        self.update_plots()
 
     def template_lines(self):
         self._model.template_landmarkBoolean = self._view.ui.templatelandmarkcheckBox.isChecked()
@@ -1280,7 +1349,7 @@ class LaminarCtrl():
         self._view.ui.figsavepushButton.clicked.connect(self.savecurrentfig)
         self._view.ui.themecheckBox.toggled.connect(self.changeTheme)
         self._view.ui.badsitecheckBox.toggled.connect(self.landmarkreset)
-        self._view.ui.probecomboBox.currentIndexChanged.connect(self.update_plots)
+        self._view.ui.probecomboBox.currentIndexChanged.connect(self.update_probe_plots)
 
 
 def main():
