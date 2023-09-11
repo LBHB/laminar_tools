@@ -281,6 +281,7 @@ class LaminarModel():
             print("Can't load MUA.")
 
         try:
+            probe = self.probe[self.current_probe_index][-1:]
             print(f"Loading {parmfile}")
             ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
             rec = ex.get_recording(loadkey=f'psth.fs{fs}')
@@ -822,10 +823,14 @@ class LaminarModel():
         complete_dict['site area deep'] = site_area_deep
 
         # assign new depth mapping to depth dictionary currently in celldb if it exists
+        try:
+            self.load_depth_from_db()
+        except:
+            pass
         self.depth_mapped = self.loadedds
         self.depth_mapped[self.probe[self.current_probe_index]] = {**complete_dict, **position_memory}
         # update database loaded depths
-        self.loadedds = self.depth_mapped
+        # self.loadedds = self.depth_mapped
 
 
     def load_depth_from_db(self):
@@ -980,6 +985,8 @@ class LaminarCtrl():
                 print("Spike info not found. Still needs to be sorted?")
         self.update_siteList(self._view.ui.sitecomboBox.currentIndex())
         self._model.celldb_save_plots()
+        # load new depths to update model
+        self._model.load_depth_from_db()
 
     def changeTheme(self):
         if self._view.ui.themecheckBox.isChecked():
