@@ -194,8 +194,8 @@ def parmfile_event_lfp(parmfile):
                     left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=False)
 
         elif probe_type == 'UCLA':
-            column_xy = {k:v for (k,v) in channel_xy.items() if v[0] == '-20'}
-            column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[k][1]))
+            column_xy = {k:v for (k,v) in channel_xy[0].items() if v[0] == '-20'}
+            column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[0][k][1]))
             column_nums_sorted = [int(ch)-1 for ch in column_xy_sorted]
             left_lfp = np.take(lfp_, column_nums_sorted, axis=0)
             left_lfp_events = np.take(lfp_events, column_nums_sorted, axis=1)
