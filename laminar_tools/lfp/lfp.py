@@ -131,7 +131,7 @@ def parmfile_event_lfp(parmfile):
 
     for prb_ind in range(len(probes)):
         if probe_type == 'NPX':
-            column_xy = {k:v for (k,v) in channel_xy[prb_ind].items() if v[0] == '11'}
+            column_xy = {k:v for (k,v) in channel_xy[prb_ind].items() if v[0] == '27'}
             probe_letter = probes[prb_ind][-1:]
             if len(probes) >= 2:
                 physical_channel_num = [prb_ch for prb_ch in rec['raw'].chans if f"{probe_letter}-" in prb_ch]
