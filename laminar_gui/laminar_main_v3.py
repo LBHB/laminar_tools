@@ -602,7 +602,7 @@ class LaminarModel():
     #     self.depth_mapped = {**ABS_dict, **BSL4_dict, **L3456_dict, **L456WM_dict, **BWM_dict, **position_memory}
 
     def depth_mapping_new(self):
-        print('mapping to nominal depths')
+        print('Mapping to nominal depths')
         # take padding into consideration if matched to template
 
         try:
@@ -703,7 +703,7 @@ class LaminarModel():
                 y_in = np.array([upper_position, lower_position])
                 y_out = np.array([upper_assignment, lower_assignment])
                 f = interp1d(y_in, y_out, fill_value='extrapolate')
-                channel_dict[ch] = [location_label, int(f(channel_position)), channel_position]
+                channel_dict[ch] = [location_label, float(f(channel_position)), channel_position]
             except:
                 channel_dict[ch] = [location_label, location_label, channel_position]
         complete_dict = {}
@@ -762,9 +762,11 @@ class LaminarModel():
         # which would suggest no active 3/4 boundary. Forces user to guess if boundary is not apparent.
 
         channel_dict = {}
+        minchanposition = np.min([int(self.channel_xy[self.current_probe_index][ch][1]) for ch in list(self.channel_xy[self.current_probe_index].keys())])
         for ch in list(self.channel_xy[self.current_probe_index].keys()):
             # get channel position in pixels
-            channel_position = int(self.channel_xy[self.current_probe_index][ch][1])/column_spacing
+            channel_position = (int(self.channel_xy[self.current_probe_index][ch][1])-minchanposition)/column_spacing
+            #channel_position = (int(self.channel_xy[self.current_probe_index][ch][1]))/column_spacing
             # find
             try:
                 min_index = abs(np.array(active_positions_pixels) - channel_position).argmin()
@@ -813,7 +815,7 @@ class LaminarModel():
                 y_in = np.array([upper_position, lower_position])
                 y_out = np.array([upper_assignment, lower_assignment])
                 f = interp1d(y_in, y_out, fill_value='extrapolate')
-                channel_dict[ch] = [location_label, int(f(channel_position*column_spacing)), channel_position]
+                channel_dict[ch] = [location_label, int(f(channel_position*column_spacing+minchanposition)), channel_position]
             except:
                 channel_dict[ch] = [location_label, location_label, channel_position]
         complete_dict = {}
