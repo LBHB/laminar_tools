@@ -131,7 +131,8 @@ def parmfile_event_lfp(parmfile):
 
     for prb_ind in range(len(probes)):
         if probe_type == 'NPX':
-            column_xy = {k:v for (k,v) in channel_xy[prb_ind].items() if v[0] == '27'}
+            unique_col_name = np.unique([v[0] for (k,v) in channel_xy[prb_ind].items()])[0]
+            column_xy = {k:v for (k,v) in channel_xy[prb_ind].items() if v[0] == unique_col_name}
             probe_letter = probes[prb_ind][-1:]
             if len(probes) >= 2:
                 physical_channel_num = [prb_ch for prb_ch in rec['raw'].chans if f"{probe_letter}-" in prb_ch]
@@ -168,10 +169,10 @@ def parmfile_event_lfp(parmfile):
                     gap_chans = np.arange(column_nums_sorted[dif]+4, column_nums_sorted[dif + 1], 4)
                     # fill lfp with NaNs of the same shape as data and number of missing channels
                     gap_chans_y = np.arange(int(column_xy[str(column_nums_sorted[dif])][1])+40, int(column_xy[str(column_nums_sorted[dif+1])][1]), 40)
-                    channel_xy_gap_filled = channel_xy.copy()
+                    channel_xy_gap_filled = channel_xy[prb_ind].copy()
                     for i in range(len(gap_chans)):
-                        column_xy[str(gap_chans[i])] = ['11', gap_chans_y[i]]
-                        channel_xy_gap_filled[str(gap_chans[i])] = ['11', gap_chans_y[i]]
+                        column_xy[str(gap_chans[i])] = [unique_col_name, gap_chans_y[i]]
+                        channel_xy_gap_filled[str(gap_chans[i])] = [unique_col_name, gap_chans_y[i]]
                     column_xy_sorted = sorted(column_xy, key=lambda k: int(column_xy[k][1]))
                     left_lfp_gap = np.empty((len(gap_chans), len(left_lfp[0, :])))
                     left_events_gap = np.empty((len(left_lfp_events[:, 0, 0]), len(gap_chans), len(left_lfp_events[0, 0, :])))
