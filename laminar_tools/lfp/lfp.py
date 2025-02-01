@@ -86,6 +86,8 @@ def parmfile_event_lfp(parmfile):
     stim_window = 0.2 * rasterfs
     ex = BAPHYExperiment(parmfile=parmfile)
 
+    csdfiltw = 350
+
     # load data
     print("loading data...")
     rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=False, rawchans=None, stim=False,
@@ -158,10 +160,16 @@ def parmfile_event_lfp(parmfile):
                 # diffs = [[bool((y - x) == 1) for x, y in zip(physical_channel_int, physical_channel_int[1:])].index(False)]
                 column_diffs = [i for i,x in enumerate([(y-x) == 4 for x,y in zip(column_nums_sorted, column_nums_sorted[1:])]) if x == False]
 
-
             except:
                 print("all channels are contiguous with one another")
                 column_diffs = False
+
+            # hack to find channel spacing
+            chan_spacing = np.median(np.diff(np.array([int(v[1]) for k, v in column_xy.items()]))).astype(int)
+            csdfiltchans = np.round(csdfiltw/chan_spacing, decimals=0)
+            if csdfiltchans%2 == 0:
+                csdfiltchans += 1
+
             if column_diffs:
                 for dif in column_diffs:
                     # how many channels are missing between indexes
@@ -185,16 +193,21 @@ def parmfile_event_lfp(parmfile):
                     left_csd = np.zeros_like(left_lfp_events[:, :, :])
                     for i in range(len(left_lfp_events[:, 0, 0])):
                         # left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=True, nan_axis=0)
-                        left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 17, contains_nan=True, nan_axis=0)
+                        left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], int(csdfiltchans), contains_nan=True, nan_axis=0)
 
 
             else:
                 # calculate csd for each trial
                 left_csd = np.zeros_like(left_lfp_events[:, :, :])
                 for i in range(len(left_lfp_events[:, 0, 0])):
-                    left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 11, contains_nan=False)
+                    left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], int(csdfiltchans), contains_nan=False)
 
         elif probe_type == 'UCLA':
+            # hack to find channel spacing
+            chan_spacing = 50
+            csdfiltchans = np.round(csdfiltw/chan_spacing, decimals=0)
+            if csdfiltchans%2 == 0:
+                csdfiltchans += 1
             column_xy = {k:v for (k,v) in channel_xy[0].items() if v[0] == '-20'}
             column_xy_sorted = sorted(column_xy, key=lambda k: int(channel_xy[0][k][1]))
             column_nums_sorted = [int(ch)-1 for ch in column_xy_sorted]
@@ -204,7 +217,7 @@ def parmfile_event_lfp(parmfile):
             # calculate csd for each trial
             left_csd = np.zeros_like(left_lfp_events[:, :, :])
             for i in range(len(left_lfp_events[:, 0, 0])):
-                left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], 7, contains_nan=False)
+                left_csd[i, :, :] = csd1d(left_lfp_events[i, :, :], int(csdfiltchans), contains_nan=False)
             # left_lfp_events, center_lfp_events, right_lfp_events = column_split(lfp_events, axis=1)
             # left_lfp, center_lfp, right_lfp = column_split(lfp_, axis=0)
             # column_xy_sorted = None
