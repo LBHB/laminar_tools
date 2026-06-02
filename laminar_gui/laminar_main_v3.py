@@ -11,8 +11,6 @@ import matplotlib.lines as lines
 from PyQt5.QtWidgets import QApplication, QWidget, QTreeWidgetItem
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor
-from nems0 import db
-from nems_lbhb.baphy_io import probe_finder, npx_channel_map_finder
 from laminar_tools.lfp.lfp import parmfile_event_lfp
 from laminar_tools.mua.mua import parmfile_mua_FTC
 from laminar_tools.laminar_analysis.laminar_analysis import maximal_laminar_similarity, pad_to_template
@@ -25,7 +23,9 @@ from nems_lbhb import baphy_io as io
 import datetime as dt
 import  re
 from nems_lbhb.plots import ftc_heatmap
-from nems_lbhb import baphy_experiment
+from nems_lbhb import db, baphy_experiment
+from nems_lbhb.baphy_io import probe_finder, npx_channel_map_finder
+
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 class LaminarUi(QWidget):
@@ -1066,6 +1066,7 @@ class LaminarCtrl():
                 try:
                     item.setText(3, ', '.join(probe_check[i]))
                 except:
+                    item.setText(3, 'A')
                     pass
                 tree_items.append(item)
 

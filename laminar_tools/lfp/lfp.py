@@ -1,3 +1,4 @@
+import logging
 from scipy.signal import coherence
 from nems_lbhb.baphy_experiment import BAPHYExperiment
 import numpy as np
@@ -10,6 +11,9 @@ from laminar_tools.csd.csd import csd1d
 from joblib import Memory
 import os
 import getpass
+
+log = logging.getLogger(__name__)
+
 linux_user = getpass.getuser()
 
 
@@ -89,7 +93,7 @@ def parmfile_event_lfp(parmfile):
     csdfiltw = 350
 
     # load data
-    print("loading data...")
+    print(f"Loading data from {parmfile}...")
     rec = ex.get_recording(raw=True, resp=False, pupil=False, recache=False, rawchans=None, stim=False,
                            rasterfs=rasterfs, rawlp=rawlp, rawhp=rawhp)
     lfp_ = rec['raw']._data.copy()
@@ -99,7 +103,13 @@ def parmfile_event_lfp(parmfile):
     lfp_ = lfp_ - offset[:, np.newaxis]
 
     # find stimulus onset
-    ep = rec['raw'].epochs
+    ep = rec['raw'].epochs.copy()
+    pz = (ep['end']>=0) & (ep['start']>0) & (ep['end']>ep['start'])
+    if pz.sum()<len(ep):
+        log.warning(f"Keeping {pz.sum()}/{len(ep)} epochs with start/stop>0")
+        ep = ep.loc[pz]
+        rec['raw'].epochs = ep
+
     epoch = ep.loc[ep['name'].str.startswith("PreStimSilence"), 'name'].values[0]
     epochs = rec['raw'].get_epoch_bounds(epoch)
     stim_time = int(np.round(np.array(epochs)[0, 1] - np.array(epochs)[0, 0], decimals=2) * rasterfs)
