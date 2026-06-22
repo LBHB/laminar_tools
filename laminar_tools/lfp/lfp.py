@@ -104,7 +104,7 @@ def parmfile_event_lfp(parmfile):
 
     # find stimulus onset
     ep = rec['raw'].epochs.copy()
-    pz = (ep['end']>=0) & (ep['start']>0) & (ep['end']>ep['start'])
+    pz = (ep['end']>0) & (ep['start']>=0) & (ep['end']>ep['start'])
     if pz.sum()<len(ep):
         log.warning(f"Keeping {pz.sum()}/{len(ep)} epochs with start/stop>0")
         ep = ep.loc[pz]
@@ -165,10 +165,12 @@ def parmfile_event_lfp(parmfile):
             left_lfp = np.take(lfp_, sorted_physical_index, axis=0)
             left_lfp_events = np.take(lfp_events, sorted_physical_index, axis=1)
             # deal with discontinuity...fill missing channels with nans
-            #find indexes where channels are discontinous
+            #find indexes where channels are discontinuous
             try:
+                mindiff = np.min(np.diff(column_nums_sorted))
+                log.info(f"Channel step size in left column: {mindiff}")
                 # diffs = [[bool((y - x) == 1) for x, y in zip(physical_channel_int, physical_channel_int[1:])].index(False)]
-                column_diffs = [i for i,x in enumerate([(y-x) == 4 for x,y in zip(column_nums_sorted, column_nums_sorted[1:])]) if x == False]
+                column_diffs = [i for i,x in enumerate([(y-x) == mindiff for x,y in zip(column_nums_sorted, column_nums_sorted[1:])]) if x == False]
 
             except:
                 print("all channels are contiguous with one another")
@@ -240,7 +242,7 @@ def parmfile_event_lfp(parmfile):
         else:
             raise ValueError("Unsupported probe type")
 
-        left_csd = left_csd.mean(axis=0)
+        left_csd = np.nanmean(left_csd, axis=0)
 
         # relative power spectrum
         freqs, power, relative_power = welch_relative_power(left_lfp, rasterfs, nperseg=1024)

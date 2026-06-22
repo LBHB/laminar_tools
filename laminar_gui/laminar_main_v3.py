@@ -1,16 +1,16 @@
 import sys
 import warnings
-import matplotlib
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-matplotlib.use('Qt5Agg')
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
-import matplotlib.lines as lines
 from PyQt5.QtWidgets import QApplication, QWidget, QTreeWidgetItem
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor
+import matplotlib
+matplotlib.use('Qt5Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+import matplotlib.lines as lines
 from laminar_tools.lfp.lfp import parmfile_event_lfp
 from laminar_tools.mua.mua import parmfile_mua_FTC
 from laminar_tools.laminar_analysis.laminar_analysis import maximal_laminar_similarity, pad_to_template
