@@ -1,3 +1,4 @@
+import os
 import sys
 import warnings
 from PyQt5.QtWidgets import QApplication, QWidget, QTreeWidgetItem
@@ -879,8 +880,9 @@ class LaminarModel():
         d = db.pd_query(sql)
         year = d['pendate'][0][:4]
         animalid = self._view.ui.animalcomboBox.currentText().lower()
-        parmfile = self.parmfile[:-2]
-        fig_loc = f"/auto/data/web/celldb/analysis/{animalid}/{year}/{parmfile}.lfp_depth_markers.jpg"
+        parmfile = self.parmfile.replace('.m','')
+        fig_path = f"/auto/data/web/celldb/analysis/{animalid}/{year}"
+        fig_loc = f"{fig_path}/{parmfile}.lfp_depth_markers.jpg"
         f, ax = plt.subplots(1,3, figsize=(15, 5), layout='tight')
         im = ax[0].imshow(self.psd_norm[self.current_probe_index], origin='lower', aspect='auto', clim=[0, self.cmax])
         ax[0].set_xlim(self.freqs[self.current_probe_index][0], self.freqs[self.current_probe_index][-1])
@@ -936,6 +938,8 @@ class LaminarModel():
                                             ax[2].text(0, sPos - 2, bottom, color='orange', fontsize=10)]
             except:
                 continue
+
+        os.makedirs(fig_path, exist_ok=True)
         f.savefig(fig_loc)
 
 class LaminarCtrl():
