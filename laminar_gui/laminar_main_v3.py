@@ -145,6 +145,10 @@ class LaminarModel():
                 site_probe_list.append(parmfile_probes)
                 site_probe_type.append(experiment_probe_type[0])
             except:
+                parmfile_probes = ['?']
+                experiment_probe_type = ['?']
+                site_probe_list.append(parmfile_probes)
+                site_probe_type.append(experiment_probe_type[0])
                 print(f"Unable to find raw data path for {parmfile}...unexpected data path?")
 
         return site_probe_list, site_probe_type
