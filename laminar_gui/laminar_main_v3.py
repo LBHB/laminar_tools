@@ -188,8 +188,8 @@ class LaminarModel():
 
     @staticmethod
     def _parmfile_run_number(parmfile):
-        """Return the session number after the site letter (for example a07)."""
-        match = re.search(r'a(\d+)(?=_)', Path(str(parmfile)).name,
+        """Return the run number after the penetration letter (e.g. a07, c01)."""
+        match = re.search(r'[a-z](\d+)(?=_)', Path(str(parmfile)).name,
                           flags=re.IGNORECASE)
         if match is None:
             raise ValueError(f'Cannot determine session number from {parmfile}')
