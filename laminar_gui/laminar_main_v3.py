@@ -20,6 +20,7 @@ from functools import partial
 from pathlib import Path
 import json
 from scipy.interpolate import interp1d
+import nems.tools.signal
 from nems_lbhb import baphy_io as io
 import datetime as dt
 import  re
@@ -57,6 +58,8 @@ class LaminarModel():
         self.figpathroot = "/auto/users/wingertj"
         self.raw_data_path = Path('/auto/data/daq')
         self.loadedds = {}
+        self.ftc_response_cache = {}
+        self.ftc_candidate_for_bnb = None
 
     def update_default_landmarkPositions(self):
         self.landmarkPosition = {}
@@ -183,6 +186,74 @@ class LaminarModel():
 
         return FTC_channels == BNB_channels
 
+    @staticmethod
+    def _parmfile_run_number(parmfile):
+        """Return the session number after the site letter (for example a07)."""
+        match = re.search(r'a(\d+)(?=_)', Path(str(parmfile)).name,
+                          flags=re.IGNORECASE)
+        if match is None:
+            raise ValueError(f'Cannot determine session number from {parmfile}')
+        return int(match.group(1))
+
+    def _clear_ftc_candidate(self):
+        self.ftc_parmfile = None
+        self.ftc_parmfile_path = None
+        self.ftc_raw_path = None
+        self.ftc_candidate_for_bnb = None
+
+    def find_compatible_ftc_parmfile(self, bnb_parmfile):
+        """Select the nearest same-site FTC run with a compatible channel map."""
+        try:
+            bnb_run = self._parmfile_run_number(bnb_parmfile)
+        except ValueError as error:
+            self._clear_ftc_candidate()
+            print(error)
+            return None
+
+        candidates = []
+        for parmfile in self.parmfilelist:
+            if 'FTC' not in str(parmfile).upper():
+                continue
+            try:
+                candidates.append((self._parmfile_run_number(parmfile), parmfile))
+            except ValueError:
+                print(f'Skipping FTC with an unrecognized name: {parmfile}')
+
+        for _, candidate in sorted(
+                candidates, key=lambda item: (abs(item[0] - bnb_run), item[1])):
+            raw_path = self.parmfile_raw_path(candidate)
+            probe_type = self.parmfile_probe_type.get(candidate, '?')
+            try:
+                if probe_type == 'NPX':
+                    channel_match = self.BNB_FTC_channel_match(
+                        raw_path, self.bnb_raw_path
+                    )
+                elif probe_type == 'UCLA':
+                    channel_match = True
+                else:
+                    print(f'Skipping {candidate}: unknown probe type {probe_type}')
+                    continue
+            except Exception as error:
+                print(f'Skipping {candidate}: channel-map check failed ({error})')
+                continue
+
+            if channel_match:
+                self.ftc_parmfile = candidate
+                self.ftc_parmfile_path = [
+                    self.raw_data_path / self._view.ui.animalcomboBox.currentText()
+                    / self.siteid / candidate
+                ]
+                self.ftc_raw_path = raw_path
+                self.ftc_candidate_for_bnb = (self.siteid, bnb_parmfile)
+                print(f'Using FTC candidate {candidate} for {bnb_parmfile}')
+                return candidate
+
+            print(f'Skipping {candidate}: channel map does not match {bnb_parmfile}')
+
+        self._clear_ftc_candidate()
+        print(f'No compatible FTC candidate found for {bnb_parmfile}')
+        return None
+
 
     def load_template(self):
         template_psd = np.load("/auto/users/wingertj/code/csd_project/data/laminar_features/template/final_psd_template_v2.npy")
@@ -194,6 +265,7 @@ class LaminarModel():
 
     def site_csd_psd(self, parmfile, align=True):
         self.load_template()
+        self.padding = None
         csd, psd, freqs, stim_window, rasterfs, column_xy_sorted, column_xy, channel_xy, coh_mat, probe, probe_type = parmfile_event_lfp(parmfile)
         max_power = [np.nanmax(psd[i], axis=0) for i in range(len(psd))]
         if align:
@@ -234,101 +306,394 @@ class LaminarModel():
 
     def remove_ax(self, canvas):
         # delete axes from canvas
+        axes = canvas.ax if isinstance(canvas.ax, (list, tuple, np.ndarray)) else [canvas.ax]
+        for axis in axes:
+            if axis in canvas.fig.axes:
+                canvas.fig.delaxes(axis)
         try:
-            canvas.fig.delaxes(canvas.ax)
-        except:
-            for i in range(len(canvas.ax)):
-                canvas.fig.delaxes(canvas.ax[i])
-        try:
-            canvas.fig.delaxes(canvas.cax)
-        except:
-            print("cax object does not exist")
+            if canvas.cax in canvas.fig.axes:
+                canvas.fig.delaxes(canvas.cax)
+        except AttributeError:
+            pass
 
-    def FTC_heatmap_plot(self, canvas, parmfile):
+    @staticmethod
+    def _prepare_ftc_response(resp):
+        """Collapse PSI's frequency:channel FTC names to frequency epochs."""
+        resp = resp.copy()
+        resp.epochs = resp.epochs.copy()
+        resp.epochs['name'] = resp.epochs['name'].str.replace(
+            r'^(STIM_[^:]+):[^,]+$', r'\1', regex=True
+        )
+        return resp
+
+    @staticmethod
+    def _threshold_channel_info(cellids, probe):
+        probe = str(probe)
+        selected = []
+        depths = []
+        for cellid in cellids:
+            match = re.search(r'-(\d+)([A-Za-z])$', cellid)
+            if match is None or match.group(2) != probe:
+                continue
+            selected.append(cellid)
+            depths.append(int(match.group(1)))
+        return selected, np.asarray(depths)
+
+    def _lfp_channel_grid(self):
+        keys = [str(key) for key in self.column_keys[self.current_probe_index]]
+        positions = self.column_xy[self.current_probe_index]
+        row_count = self.psd_norm[self.current_probe_index].shape[0]
+
+        if row_count > len(keys) and self.padding is not None:
+            lower = int(self.padding[0])
+            upper = row_count - len(keys) - lower
+            keys = ([None] * lower) + keys + ([None] * max(upper, 0))
+
+        depths = [None if key is None else int(positions[key][1]) for key in keys]
+        return keys, depths
+
+    @staticmethod
+    def _raw_to_physical_channels(raw_path, probe):
+        raw_path = Path(raw_path)
+        oe_folders = sorted(path for path in raw_path.iterdir() if path.is_dir())
+        if not oe_folders:
+            oe_folders = [raw_path]
+
+        for oe_folder in oe_folders:
+            for probe_geometry in npx_channel_map_finder(oe_folder):
+                for probe_name, channel_geometry in probe_geometry.items():
+                    if probe_name.endswith(str(probe)):
+                        return {
+                            raw_channel: int(physical_channel)
+                            for raw_channel, physical_channel in enumerate(
+                                channel_geometry.keys(), start=1
+                            )
+                        }
+        raise ValueError(f'No Open Ephys channel map found for probe {probe}')
+
+    def _align_threshold_to_lfp(self, resp, probe):
+        raw_to_physical = self._raw_to_physical_channels(
+            self.ftc_raw_path, probe
+        )
+        physical_events = {}
+        for cellid in resp.chans:
+            match = re.search(r'-(\d+)([A-Za-z])$', cellid)
+            if match is None or match.group(2) != str(probe):
+                continue
+            physical_channel = raw_to_physical.get(int(match.group(1)))
+            if physical_channel is not None:
+                physical_events[physical_channel] = np.asarray(resp._data[cellid])
+
+        grid, depths = self._lfp_channel_grid()
+        present = np.asarray([
+            key is not None and int(key) in physical_events for key in grid
+        ])
+        if not present.any():
+            raise ValueError(
+                f'Threshold channels do not overlap the probe {probe} LFP column'
+            )
+
+        data = {}
+        for row, key in enumerate(grid):
+            physical_channel = None if key is None else int(key)
+            channel_name = (
+                f'{self.siteid}-{physical_channel:03d}{probe}'
+                if physical_channel is not None
+                else f'{self.siteid}-padding-{row:03d}{probe}'
+            )
+            data[channel_name] = physical_events.get(
+                physical_channel, np.asarray([], dtype=float)
+            )
+
+        aligned = nems.tools.signal.PointProcess(
+            fs=resp.fs, data=data, name='resp', recording=self.siteid,
+            chans=list(data), epochs=resp.epochs.copy(),
+        )
+        depth_labels = np.asarray([
+            '' if depth is None else depth for depth in depths
+        ], dtype=object)
+        return aligned, depth_labels, present, grid, depths
+
+    @staticmethod
+    def _set_channel_ticks(ax, grid, depths):
+        ticks = np.arange(0, len(grid), 8)
+        labels = []
+        for tick in ticks:
+            key = grid[tick]
+            depth = depths[tick]
+            labels.append('' if key is None else f'ch{key}\n{depth}um')
+        ax.set_yticks(ticks)
+        ax.set_yticklabels(labels, fontsize=6)
+
+    @staticmethod
+    def _interpolate_ftc_gaps(image, present):
+        """Fill only interior detector-channel gaps for display readability."""
+        image = np.asarray(image, dtype=float).copy()
+        if image.ndim != 2 or image.shape[0] != len(present):
+            return image
+        valid = np.flatnonzero(present)
+        if valid.size < 2:
+            return image
+        image[:valid[0], :] = np.nan
+        image[valid[-1] + 1:, :] = np.nan
+        for row in range(valid[0] + 1, valid[-1]):
+            if not present[row]:
+                image[row, :] = np.nan
+        for column in range(image.shape[1]):
+            image[valid[0]:valid[-1] + 1, column] = np.interp(
+                np.arange(valid[0], valid[-1] + 1), valid,
+                image[valid, column]
+            )
+        return image
+
+    @staticmethod
+    def _evoked_spike_metric(resp, response_len=0.1):
+        """Return mean post-tone minus prestimulus activity per channel."""
+        raster = resp.rasterize()
+        epochs = raster.epochs
+        pre = epochs.loc[epochs['name'] == 'PreStimSilence']
+        if pre.empty:
+            raise ValueError('No PreStimSilence epochs available')
+        pre_bins = int(np.nanmean(pre['end'] - pre['start']) * raster.fs)
+        response_bins = max(int(response_len * raster.fs), 1)
+        stim_names = sorted(
+            name for name in epochs['name'].unique()
+            if str(name).startswith('STIM_')
+        )
+        if not stim_names:
+            raise ValueError('No stimulus epochs available')
+
+        changes = []
+        for stim_name in stim_names:
+            extracted = raster.extract_epoch(stim_name)
+            if extracted.shape[0] == 0:
+                continue
+            end_bin = min(pre_bins + response_bins, extracted.shape[2])
+            if end_bin <= pre_bins or pre_bins == 0:
+                continue
+            baseline = extracted[:, :, :pre_bins].mean(axis=(0, 2))
+            evoked = extracted[:, :, pre_bins:end_bin].mean(axis=(0, 2))
+            changes.append(evoked - baseline)
+        if not changes:
+            raise ValueError('Stimulus epochs contain no usable samples')
+        return np.nanmean(np.stack(changes), axis=0)
+
+    @staticmethod
+    def _remove_ftc_axes(canvas):
+        for axis in getattr(canvas, '_ftc_axes', []):
+            try:
+                canvas.figure.delaxes(axis)
+            except (KeyError, ValueError):
+                pass
+        canvas._ftc_axes = []
+
+    @staticmethod
+    def _sorted_channel_info(cellids, probe, probe_count):
+        selected = [cellid for cellid in cellids if f'-{probe}-' in cellid]
+        if not selected and probe_count == 1:
+            selected = list(cellids)
+        depths = np.asarray([int(cellid.split('-')[-2]) for cellid in selected])
+        return selected, depths
+
+    @staticmethod
+    def _load_binary_threshold_times(openephys_folder, trial_start, siteid):
+        """Read OpenEphys threshold times without loading spike waveforms."""
+        trial_ttls = io.load_trial_starts_openephys_master(openephys_folder)
+        if len(trial_ttls) == 0:
+            raise ValueError('No OpenEphys trial TTLs found')
+        adjustment = float(trial_start) - float(trial_ttls[0])
+
+        spike_dict = {}
+        structure_files = Path(openephys_folder).glob(
+            'Record Node */experiment*/recording*/structure.oebin'
+        )
+        for structure_file in structure_files:
+            with structure_file.open() as handle:
+                structure = json.load(handle)
+            gui_version = float('.'.join(structure['GUI version'].split('.')[:2]))
+            for spike_info in structure.get('spikes', []):
+                folder_key = 'folder' if gui_version >= 0.6 else 'folder_name'
+                sample_name = 'sample_numbers.npy' if gui_version >= 0.6 else 'spike_times.npy'
+                sample_file = structure_file.parent / 'spikes' / spike_info[folder_key] / sample_name
+                if not sample_file.exists():
+                    continue
+
+                electrode = spike_info['name'].split()[-1].rjust(4, '0')
+                cellid = f'{siteid}-{electrode}'
+                eventtimes = np.asarray(np.load(sample_file, mmap_mode='r')).reshape(-1)
+                eventtimes = eventtimes / float(spike_info['sample_rate']) + adjustment
+                eventtimes = eventtimes[eventtimes > 0]
+                if cellid in spike_dict:
+                    spike_dict[cellid] = np.concatenate((spike_dict[cellid], eventtimes))
+                else:
+                    spike_dict[cellid] = eventtimes
+
+        if not spike_dict:
+            raise ValueError('No binary OpenEphys threshold events found')
+        return spike_dict
+
+    def _load_threshold_response(self, ex, fs):
+        aligned_events = ex.get_baphy_events(
+            correction_method='openephys', rasterfs=fs
+        )
+        exptparams = ex.get_baphy_exptparams()
+        globalparams = ex.get_baphy_globalparams()
+        epochs = [
+            baphy_experiment.baphy_events_to_epochs(
+                events, params, globals_, file_index, rasterfs=fs
+            )
+            for file_index, (events, params, globals_) in enumerate(
+                zip(aligned_events, exptparams, globalparams)
+            )
+        ]
+        threshold_dicts = []
+        for raw_path, events in zip(ex.openephys_folder, aligned_events):
+            trial_starts = events.loc[
+                events['name'].astype(str).str.startswith('TRIALSTART'), 'start'
+            ]
+            if trial_starts.empty:
+                raise ValueError('No TRIALSTART events available for FTC alignment')
+            threshold_dicts.append(
+                self._load_binary_threshold_times(
+                    raw_path, trial_starts.iloc[0], ex.siteid
+                )
+            )
+
+        signals = [
+            nems.tools.signal.PointProcess(
+                fs=fs, data=spikes, name='resp', recording=ex.siteid,
+                chans=list(spikes), epochs=events,
+            )
+            for spikes, events in zip(threshold_dicts, epochs)
+        ]
+        response = signals[0]
+        for signal in signals[1:]:
+            response = response.append_time(signal)
+        return response
+
+    def FTC_heatmap_plot(self, canvas, parmfile, source='Threshold spikes'):
         # remove current artists
         self.clear_canvas(canvas)
+        self._remove_ftc_axes(canvas)
         self.remove_ax(canvas)
-        # # delete axes from canvas
-        # try:
-        #     canvas.fig.delaxes(canvas.ax)
-        # except:
-        #     for i in range(len(canvas.ax)):
-        #         canvas.fig.delaxes(canvas.ax[i])
-        # try:
-        #     canvas.fig.delaxes(canvas.cax)
-        # except:
-        #     print("cax object does not exist")
+        axes = canvas.figure.subplots(
+            1, 2, sharey=True, gridspec_kw={'width_ratios': [5, 1]}
+        )
+        canvas._ftc_axes = list(axes)
+        canvas.ax = axes[0]
+        metric_ax = axes[1]
+        canvas.figure.subplots_adjust(wspace=0.04)
 
-        # f, ax = plt.subplots(2, 1)
-        # create a SU and MUA FTC heatmap subplot
         try:
-            canvas.ax = canvas.figure.subplots(1,2)
             siteid = self.parmfile[:7]
             print(f"Loading {parmfile}")
             ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
             fs = 100
-            bp = (500, 5000)
-            rec = ex.get_recording(mua=True, raw=False, pupil=False, resp=False, stim=False, recache=False, rawchans=None,
-                                   rasterfs=fs, muabp=bp)
-            resp = rec['mua'].copy()
-            cellids = resp.chans
             probe = self.probe[self.current_probe_index][-1:]
-            if probe is not None:
-                cellids=[c for c in cellids if f'{probe}-' in c]
+            present = None
+            channel_grid = None
+            channel_depths = None
+
+            if source == 'Threshold spikes':
+                cache_key = tuple(str(path) for path in ex.parmfile)
+                if cache_key not in self.ftc_response_cache:
+                    self.ftc_response_cache[cache_key] = (
+                        self._load_threshold_response(ex, fs)
+                    )
+                resp = self.ftc_response_cache[cache_key].copy()
+                resp, depths, present, channel_grid, channel_depths = (
+                    self._align_threshold_to_lfp(resp, probe)
+                )
+                cellids = resp.chans
+            elif source == 'Raw MUA':
+                rec = ex.get_recording(
+                    mua=True, raw=False, pupil=False, resp=False, stim=False,
+                    recache=False, rawchans=None, rasterfs=fs, muabp=(500, 5000)
+                )
+                resp = rec['mua'].copy()
+                cellids = [c for c in resp.chans if f'{probe}-' in c]
                 resp = resp.extract_channels(cellids)
-            chans = [int(c.split('-')[-1]) for c in cellids]
-            depths = np.array(chans)
+                depths = np.asarray([int(c.split('-')[-1]) for c in cellids])
+            elif source == 'Sorted units':
+                rec = ex.get_recording(loadkey=f'psth.fs{fs}')
+                resp = rec['resp'].copy()
+                cellids, depths = self._sorted_channel_info(
+                    resp.chans, probe, len(self.probe)
+                )
+                resp = resp.extract_channels(cellids)
+            else:
+                raise ValueError(f"Unknown FTC source: {source}")
 
-            # key parameters are resp and depths. Other stuff is window dressing.
+            if not cellids:
+                raise ValueError(f"No {source} channels found for probe {probe}")
+
+            resp = self._prepare_ftc_response(resp)
+            evoked_metric = self._evoked_spike_metric(resp)
             ftc_heatmap(siteid=siteid, resp=resp, depths=depths, probe=probe,
-                        smooth_win=3, snr_norm=True, ax=canvas.ax[0])
-        except:
-            print("Can't load MUA.")
-
-        try:
-            probe = self.probe[self.current_probe_index][-1:]
-            print(f"Loading {parmfile}")
-            ex = baphy_experiment.BAPHYExperiment(parmfile=parmfile)
-            rec = ex.get_recording(loadkey=f'psth.fs{fs}')
-            resp = rec['resp'].copy()
-            cellids = resp.chans
-            if probe is not None:
-                cellids = [c for c in cellids if f'-{probe}-' in c]
-                resp = rec['resp'].extract_channels(cellids)
-            chans = [int(c.split('-')[-2]) for c in cellids]
-            depths = np.array(chans)
-
-            ftc_heatmap(siteid=siteid, resp=resp, depths=depths, probe=probe,
-                        smooth_win=3, snr_norm=True, ax=canvas.ax[1])
-        except:
-            print("Site not sorted yet? Error in plotting SU FTC heatmap")
+                        smooth_win=3, snr_norm=(source == 'Raw MUA'),
+                        ax=canvas.ax)
+            canvas.ax.set_aspect('auto')
+            if present is not None:
+                heatmap = np.asarray(canvas.ax.images[-1].get_array()).copy()
+                interpolate = True
+                try:
+                    interpolate = self._view.ui.FTCinterpolateCheckBox.isChecked()
+                except AttributeError:
+                    pass
+                if interpolate:
+                    heatmap = self._interpolate_ftc_gaps(heatmap, present)
+                else:
+                    heatmap[~present, :] = np.nan
+                cmap = canvas.ax.images[-1].get_cmap().copy()
+                cmap.set_bad(canvas.ax.get_facecolor())
+                canvas.ax.images[-1].set_cmap(cmap)
+                canvas.ax.images[-1].set_data(np.ma.masked_invalid(heatmap))
+                self._set_channel_ticks(
+                    canvas.ax, channel_grid, channel_depths
+                )
+                evoked_metric[~present] = np.nan
+            y = np.arange(len(evoked_metric))
+            metric_ax.axvline(0, color='0.3', linewidth=1.0)
+            metric_ax.plot(evoked_metric, y, color='#8b0000', linewidth=1.8)
+            metric_ax.fill_betweenx(y, 0, evoked_metric, color='#c62828', alpha=0.55)
+            metric_ax.set_xlabel('Evoked Δ\nspikes/100 ms', fontsize=7)
+            metric_ax.tick_params(axis='x', labelsize=6)
+            metric_ax.tick_params(axis='y', left=False, labelleft=False)
+            metric_ax.set_ylim(canvas.ax.get_ylim())
+            canvas.ax.set_title(f'{siteid} Probe {probe}: {source}')
+        except Exception as error:
+            print(f"Can't load {source} FTC: {error}")
+            canvas.ax.set_axis_off()
+            canvas.ax.text(0.5, 0.5, f'{source} FTC unavailable',
+                           ha='center', va='center', transform=canvas.ax.transAxes)
+            metric_ax.set_axis_off()
 
         # draw to canvas
         self._view.ui.templateCanvas.canvas.draw()
 
-    def update_FTC_parmfile(self):
-        getSelected = self._view.ui.siteList.selectedItems()
-        rawpath = self.raw_data_path
+    def parmfile_raw_path(self, parmfile):
         animalid = self._view.ui.animalcomboBox.currentText()
-        if getSelected:
-            baseNode = getSelected[0]
-            getChildNode = baseNode.text(0)
-            temp_parmfile = str(getChildNode)
-            if 'FTC' in temp_parmfile:
-                self.ftc_parmfile = temp_parmfile
-                self.ftc_parmfile_path = [rawpath / animalid / self.siteid / self.ftc_parmfile]
-                self.ftc_raw_path = rawpath / animalid / self.siteid / 'raw' / self.ftc_parmfile[:9]
-                if self.parmfile_probe_type[self.ftc_parmfile] == 'NPX':
-                    self.BNB_FTC_channel_match(self.ftc_raw_path, self.bnb_raw_path)
-                    channel_match = True
-                elif self.parmfile_probe_type[self.ftc_parmfile] == 'UCLA':
-                    # assume the recordings use the same channel match
-                    channel_match = True
-                else:
-                    channel_match = False
-                    print("Channel maps between BNB and FTC might not match because probe type is unknown. Skipping")
-            else:
-                print("Current selected parmfile does not contain FTC")
+        site_root = self.raw_data_path / animalid / self.siteid
+        legacy_path = site_root / 'raw' / parmfile[:9]
+        psi_path = site_root / parmfile / 'raw'
+        return legacy_path if legacy_path.exists() else psi_path
+
+    def update_FTC_parmfile(self):
+        candidate_key = (self.siteid, self.parmfile)
+        if (self.ftc_candidate_for_bnb == candidate_key
+                and self.ftc_parmfile_path is not None):
+            return True
+        return self.find_compatible_ftc_parmfile(self.parmfile) is not None
+
+    def FTC_unavailable_plot(self, canvas, message):
+        self.clear_canvas(canvas)
+        self._remove_ftc_axes(canvas)
+        self.remove_ax(canvas)
+        canvas.ax = canvas.fig.add_subplot(111)
+        canvas.ax.set_axis_off()
+        canvas.ax.text(0.5, 0.5, message, ha='center', va='center',
+                       transform=canvas.ax.transAxes)
+        canvas.draw()
 
 
     def no_normalization(self):
@@ -415,6 +780,7 @@ class LaminarModel():
         plots the laminar data
         """
         print('plotting laminar data...')
+        self._remove_ftc_axes(canvas)
         # reset template canvas
         self.remove_ax(self._view.ui.templateCanvas.canvas)
         self._view.ui.templateCanvas.canvas.ax = self._view.ui.templateCanvas.canvas.fig.add_subplot(111)
@@ -456,11 +822,9 @@ class LaminarModel():
             canvas.ax.set_xlim(self.freqs[self.current_probe_index][0], self.freqs[self.current_probe_index][-1])
             canvas.ax.set_xlabel("frequency")
             canvas.fig.colorbar(im, cax=canvas.cax)
-            y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
-            canvas.ax.set_yticks(y_ticks)
             if self.probe_type == 'NPX':
-                y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+                channel_grid, channel_depths = self._lfp_channel_grid()
+                self._set_channel_ticks(canvas.ax, channel_grid, channel_depths)
 
         elif site_csd:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_CSD.pdf")
@@ -472,11 +836,9 @@ class LaminarModel():
             canvas.ax.set_xlabel("time (s)")
             cbar = canvas.fig.colorbar(im, cax=canvas.cax, ticks=[self.csd[self.current_probe_index][1:-1, :].max(), self.csd[self.current_probe_index][1:-1, :].min()])
             cbar.ax.set_yticklabels(['source', 'sink'])
-            y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
-            canvas.ax.set_yticks(y_ticks)
             if self.probe_type == 'NPX':
-                y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+                channel_grid, channel_depths = self._lfp_channel_grid()
+                self._set_channel_ticks(canvas.ax, channel_grid, channel_depths)
 
         elif site_coh:
             self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_COH.pdf")
@@ -487,13 +849,17 @@ class LaminarModel():
             gamma_cohmat = np.squeeze(self.coh[self.current_probe_index].mean(axis=0))
             im = canvas.ax.imshow(gamma_cohmat, origin='lower', aspect='auto')
             cbar = canvas.fig.colorbar(im, cax=canvas.cax)
-            y_ticks = np.arange(0, len(self.psd_norm[self.current_probe_index][:, 0]), 8)
-            canvas.ax.set_yticks(y_ticks)
-            canvas.ax.set_xticks(y_ticks)
             if self.probe_type == 'NPX':
-                y_tick_channels = np.take(self.column_keys[self.current_probe_index], y_ticks, axis=0)
-                canvas.ax.set_yticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
-                canvas.ax.set_xticklabels(["ch" + str(i) + '\n' + str(self.column_xy[self.current_probe_index][i][1]) + 'um' for i in y_tick_channels], fontsize=6)
+                channel_grid, channel_depths = self._lfp_channel_grid()
+                self._set_channel_ticks(canvas.ax, channel_grid, channel_depths)
+                ticks = np.arange(0, len(channel_grid), 8)
+                labels = [
+                    '' if channel_grid[tick] is None
+                    else f'ch{channel_grid[tick]}\n{channel_depths[tick]}um'
+                    for tick in ticks
+                ]
+                canvas.ax.set_xticks(ticks)
+                canvas.ax.set_xticklabels(labels, fontsize=6)
         # elif site_erp:
         #     self._view.ui.figsavelineEdit.setText(f"{self.figpathroot}/{self.parmfile[:-8]}_ERP.pdf")
         #     for i in range(len(self.erp[:, 0])):
@@ -1082,47 +1448,50 @@ class LaminarCtrl():
         self._view.ui.siteList.setSortingEnabled(True)
         self._view.ui.siteList.blockSignals(False)
 
-    def normalization(self):
+    def normalization(self, *args, redraw=True):
         if self._view.ui.tempmaxnormradioButton.isChecked():
             self._model.temp_normalization()
-            self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
-            self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-                                  self._view.ui.siteCSDradioButton.isChecked(),
-                                  self._view.ui.siteCOHradioButton.isChecked(),
-                                  self._view.ui.siteERPradioButton.isChecked())
-            self._view.ui.templateCanvas.canvas.draw()
-            self._view.ui.siteCanvas.canvas.draw()
         elif self._view.ui.sitemaxnormradioButton.isChecked():
             self._model.site_normalization()
-            self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
-            self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-                                  self._view.ui.siteCSDradioButton.isChecked(),
-                                  self._view.ui.siteCOHradioButton.isChecked(),
-                                  self._view.ui.siteERPradioButton.isChecked())
-            self._view.ui.templateCanvas.canvas.draw()
-            self._view.ui.siteCanvas.canvas.draw()
         elif self._view.ui.localnormradioButton.isChecked():
             self._model.local_normalization()
-            self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
-            # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-            #                       self._view.ui.siteCSDradioButton.isChecked(),
-            #                       self._view.ui.siteCOHradioButton.isChecked(),
-            #                       self._view.ui.siteERPradioButton.isChecked())
-            self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-                                  self._view.ui.siteCSDradioButton.isChecked(),
-                                  self._view.ui.siteCOHradioButton.isChecked())
-            self._view.ui.templateCanvas.canvas.draw()
-            self._view.ui.siteCanvas.canvas.draw()
-
         elif self._view.ui.nonormradioButton.isChecked():
             self._model.no_normalization()
-            self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
-            self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-                                  self._view.ui.siteCSDradioButton.isChecked(),
-                                  self._view.ui.siteCOHradioButton.isChecked(),
-                                  self._view.ui.siteERPradioButton.isChecked())
-            self._view.ui.templateCanvas.canvas.draw()
-            self._view.ui.siteCanvas.canvas.draw()
+        if redraw:
+            self.update_plots()
+
+    def plot_spike_panel(self):
+        canvas = self._view.ui.templateCanvas.canvas
+        if self._view.ui.templateViewCheckBox.isChecked():
+            self._model.template_plot(
+                canvas, self._view.ui.tempPSDradioButton.isChecked()
+            )
+        elif self._view.ui.siteFTCcheckBox.isChecked():
+            if self._model.update_FTC_parmfile():
+                self._model.FTC_heatmap_plot(
+                    canvas,
+                    self._model.ftc_parmfile_path,
+                    source=self._view.ui.FTCsourceComboBox.currentText(),
+                )
+            else:
+                self._model.FTC_unavailable_plot(
+                    canvas, 'No compatible FTC run found for this BNB session'
+                )
+        else:
+            self._model.clear_canvas(canvas)
+            canvas.ax.set_axis_off()
+            canvas.draw()
+
+    def update_spike_mode(self):
+        template_visible = self._view.ui.templateViewCheckBox.isChecked()
+        self._view.ui.tempPSDradioButton.setEnabled(template_visible)
+        self._view.ui.tempCSDradioButton.setEnabled(template_visible)
+        self._view.ui.tempPSDradioButton.setVisible(template_visible)
+        self._view.ui.tempCSDradioButton.setVisible(template_visible)
+        self._view.ui.siteFTCcheckBox.setVisible(not template_visible)
+        self._view.ui.FTCsourceComboBox.setVisible(not template_visible)
+        self._view.ui.FTCinterpolateCheckBox.setVisible(not template_visible)
+        self.update_plots()
 
     def load_site_csd_psd(self):
         self.update_probecomboBox()
@@ -1144,37 +1513,8 @@ class LaminarCtrl():
         resppath = dRawFiles['resppath'][0]
         parmfilepath = [rawpath/animalid/self._model.siteid/self._model.parmfile]
         self._model.bnb_parmfile_path = parmfilepath
-        self._model.bnb_raw_path = rawpath / animalid / self._model.siteid / 'raw' / self._model.parmfile[:9]
-        # get nearest FTC info if it exists.
-        FTC_parmfile_ints = [int(parmfile[7:9]) for parmfile in self._model.parmfilelist if 'FTC' in parmfile]
-        FTC_parmfiles = [parmfile for parmfile in self._model.parmfilelist if 'FTC' in parmfile]
-        BNB_int = int(self._model.parmfile[7:9])
-        if FTC_parmfile_ints:
-            # find parmfile closest to selected BNB
-            FTC_BNB_dist = [abs(FTC_int - BNB_int) for FTC_int in FTC_parmfile_ints]
-            parmfile_dists = list(zip(FTC_BNB_dist, FTC_parmfiles))
-            parmfile_dists.sort()
-            channel_match = False
-            for pf_ind, parmfile in parmfile_dists:
-                if channel_match:
-                    break
-                self._model.ftc_parmfile = parmfile
-                self._model.ftc_parmfile_path = [rawpath/animalid/self._model.siteid/self._model.ftc_parmfile]
-                self._model.ftc_raw_path = rawpath / animalid / self._model.siteid / 'raw' / self._model.ftc_parmfile[:9]
-                try:
-                    if self._model.parmfile_probe_type[parmfile] == 'NPX':
-                        self._model.BNB_FTC_channel_match(self._model.ftc_raw_path, self._model.bnb_raw_path)
-                        self._model.FTC_mua_heatmap(self._model.ftc_parmfile_path)
-                        channel_match = True
-                    elif self._model.parmfile_probe_type[parmfile] == 'UCLA':
-                        # assume the recordings use the same channel map
-                        self._model.FTC_mua_heatmap(self._model.ftc_parmfile_path)
-                        channel_match = True
-                    else:
-                        channel_match = False
-                        print("Channel maps between BNB and FTC might not match because probe type is unknown. Skipping")
-                except:
-                    continue
+        self._model.bnb_raw_path = self._model.parmfile_raw_path(self._model.parmfile)
+        self._model.find_compatible_ftc_parmfile(self._model.parmfile)
 
         self._model.site_csd_psd(parmfilepath, align=align)
         self._model.current_probe = self._view.ui.probecomboBox.currentText()
@@ -1196,51 +1536,40 @@ class LaminarCtrl():
             self._view.ui.areatextdeep.setText(self._model.area_deep)
         else:
             self._model.loadedds = {}
-        self.normalization()
-        if self._view.ui.siteFTCcheckBox.isChecked() == False:
-            self._model.template_plot(self._view.ui.templateCanvas.canvas, self._view.ui.tempPSDradioButton.isChecked())
-        # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-        #                       self._view.ui.siteCSDradioButton.isChecked(), self._view.ui.siteCOHradioButton.isChecked(),
-        #                       self._view.ui.siteERPradioButton.isChecked())
+        self.normalization(redraw=False)
         self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
                               self._view.ui.siteCSDradioButton.isChecked(), self._view.ui.siteCOHradioButton.isChecked())
-        self._view.ui.templateCanvas.canvas.draw()
+        self.plot_spike_panel()
         self._view.ui.siteCanvas.canvas.draw()
         self.lineconnect()
 
     def update_plots(self):
         try:
-            template_psd_requested = self._view.ui.tempPSDradioButton.isChecked()
-            site_psd_requested = self._view.ui.sitePSDradioButton.isChecked()
-            site_csd_requested = self._view.ui.siteCSDradioButton.isChecked()
-            site_coh_requested = self._view.ui.siteCOHradioButton.isChecked()
-            # site_erp_requested = self._view.ui.siteERPradioButton.isChecked()
             self._model.current_probe = self._view.ui.probecomboBox.currentText()
             self.update_current_probe_index()
-            if self._view.ui.siteFTCcheckBox.isChecked() == False:
-                # reset canvas ax object
-                self._model.remove_ax(self._view.ui.templateCanvas.canvas)
-                self._view.ui.templateCanvas.canvas.ax = self._view.ui.templateCanvas.canvas.fig.add_subplot(111)
-                self._view.ui.templateCanvas.canvas.divider = make_axes_locatable(self._view.ui.templateCanvas.canvas.ax)
-                self._view.ui.templateCanvas.canvas.cax = self._view.ui.templateCanvas.canvas.divider.append_axes("right", size="5%", pad=0.05)
-                self._view.ui.templateCanvas.canvas.xax = self._view.ui.templateCanvas.canvas.cax.get_xaxis()
-                self._view.ui.templateCanvas.canvas.xax.set_visible(False)
-                self._model.template_plot(self._view.ui.templateCanvas.canvas, template_psd_requested)
-                # self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-                #                       self._view.ui.siteCSDradioButton.isChecked(),
-                #                       self._view.ui.siteCOHradioButton.isChecked(),
-                #                       self._view.ui.siteERPradioButton.isChecked())
-                self._view.ui.templateCanvas.canvas.draw()
-            self._model.site_plot(self._view.ui.siteCanvas.canvas, self._view.ui.sitePSDradioButton.isChecked(),
-                                  self._view.ui.siteCSDradioButton.isChecked(),
-                                  self._view.ui.siteCOHradioButton.isChecked())
+            self.plot_spike_panel()
+            self.update_lfp_plot(update_probe=False)
+        except Exception as error:
+            print(f"Can't update plot. Site not loaded? {error}")
+
+    def update_lfp_plot(self, *args, update_probe=True):
+        """Redraw only the cached LFP view without rebuilding the FTC panel."""
+        if args and isinstance(args[0], bool) and not args[0]:
+            return
+        try:
+            if update_probe:
+                self._model.current_probe = self._view.ui.probecomboBox.currentText()
+                self.update_current_probe_index()
+            self._model.site_plot(
+                self._view.ui.siteCanvas.canvas,
+                self._view.ui.sitePSDradioButton.isChecked(),
+                self._view.ui.siteCSDradioButton.isChecked(),
+                self._view.ui.siteCOHradioButton.isChecked(),
+            )
             self._view.ui.siteCanvas.canvas.draw()
-            if self._view.ui.siteFTCcheckBox.isChecked():
-                self._model.update_FTC_parmfile()
-                self._model.FTC_heatmap_plot(self._view.ui.templateCanvas.canvas, self._model.ftc_parmfile_path)
             self.lineconnect()
-        except:
-            print("Can't update plot. Site not loaded?")
+        except Exception as error:
+            print(f"Can't update LFP plot. Site not loaded? {error}")
 
     def updatelandmarkcomboBox(self, sepName, checkbox):
         print(f'updating dropdown with {sepName}...')
@@ -1283,9 +1612,8 @@ class LaminarCtrl():
 
     def template_lines(self):
         self._model.template_landmarkBoolean = self._view.ui.templatelandmarkcheckBox.isChecked()
-        template_psd_requested = self._view.ui.tempPSDradioButton.isChecked()
-        self._model.template_plot(self._view.ui.templateCanvas.canvas, template_psd_requested)
-        self._view.ui.templateCanvas.canvas.draw()
+        if self._view.ui.templateViewCheckBox.isChecked():
+            self.plot_spike_panel()
 
     def site_lines(self):
         self._model.landmarkBoolean = self._model.landmarkBoolean
@@ -1347,9 +1675,14 @@ class LaminarCtrl():
         self._view.ui.sitecomboBox.currentIndexChanged.connect(self.update_siteList)
         self._view.ui.siteplotpushButton.clicked.connect(self.load_site_csd_psd)
         self._view.ui.tempPSDradioButton.toggled.connect(self.update_plots)
-        self._view.ui.sitePSDradioButton.toggled.connect(self.update_plots)
-        self._view.ui.siteCOHradioButton.toggled.connect(self.update_plots)
+        self._view.ui.tempCSDradioButton.toggled.connect(self.update_plots)
+        self._view.ui.sitePSDradioButton.toggled.connect(self.update_lfp_plot)
+        self._view.ui.siteCSDradioButton.toggled.connect(self.update_lfp_plot)
+        self._view.ui.siteCOHradioButton.toggled.connect(self.update_lfp_plot)
         self._view.ui.siteFTCcheckBox.toggled.connect(self.update_plots)
+        self._view.ui.FTCsourceComboBox.currentIndexChanged.connect(self.update_plots)
+        self._view.ui.FTCinterpolateCheckBox.toggled.connect(self.update_plots)
+        self._view.ui.templateViewCheckBox.toggled.connect(self.update_spike_mode)
         # self._view.ui.siteERPradioButton.toggled.connect(self.update_plots)
         # set the subset of separators to consider
         for boxName, checkBox in self._view.ui.layerCheckBoxes.items():
